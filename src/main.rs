@@ -43,6 +43,18 @@ struct Density {
     near: f32,
 }
 
+fn default_max_velocity_for_color() -> f32 {
+    1000.0
+}
+
+fn default_target_density() -> f32 {
+    2000.0
+}
+
+fn default_max_density_for_color() -> f32 {
+    default_target_density()
+}
+
 #[derive(
     Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
 )]
@@ -53,12 +65,18 @@ struct Config {
     gravity: Vec2,
     #[inspector(min = 0.0, max = 1.0, speed = 0.001)]
     damping: f32,
-    #[inspector(speed = 100.)]
+    #[inspector(speed = 10.)]
     target_density: f32,
-    #[inspector(speed = 100.)]
+    #[inspector(speed = 10.)]
     pressure_multiplier: f32,
     #[inspector(min = 0.0, max = 1000.0, speed = 0.1)]
     smoothing_radius: f32,
+    #[inspector(min = 0.0, max = 10000.0, speed = 1.)]
+    #[serde(default = "default_max_velocity_for_color")]
+    max_velocity_for_color: f32,
+    #[inspector(min = 0.0, speed = 10.)]
+    #[serde(default = "default_max_density_for_color")]
+    max_density_for_color: f32,
     is_paused: bool,
     start_time: i64,
     auto_save: bool,
@@ -72,9 +90,11 @@ impl Default for Config {
         Self {
             gravity: Vec2::new(0., 0.),
             damping: 0.05,
-            target_density: 2000.,
+            target_density: default_target_density(),
             pressure_multiplier: 900.,
             smoothing_radius: RADIUS * 12.,
+            max_velocity_for_color: default_max_velocity_for_color(),
+            max_density_for_color: default_max_density_for_color(),
             num_particles: 300,
             is_paused: false,
             start_time: Utc::now().timestamp(),
@@ -485,6 +505,7 @@ fn move_system(
 // color quads based on their density
 fn color_system(
     config: Res<Config>,
+    //mut particles_query: Query<(&Velocity, &mut Handle<ColorMaterial>, &Density), With<Particle>>,
     mut particles_query: Query<(&Velocity, &mut Handle<ColorMaterial>), With<Particle>>,
     mut quads_query: Query<(&Density, &mut Handle<ColorMaterial>), Without<Particle>>,
     gradient_resource: Res<GradientResource>,
@@ -493,10 +514,28 @@ fn color_system(
         return;
     }
 
+    /*
+    let max_velocity = particles_query
+        .iter_mut()
+        .map(|(velocity, _)| velocity.0.length())
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap();
+    let avg_velocity = particles_query
+        .iter_mut()
+        .map(|(velocity, _)| velocity.0.length())
+        .sum::<f32>()
+        / particles_query.iter_mut().len() as f32;
+
+    println!(
+        "max_velocity: {}  avg_velocity: {}",
+        max_velocity, avg_velocity
+    );
+    */
+
     particles_query
         .par_iter_mut()
         .for_each(|(velocity, mut material)| {
-            let speed_normalized = velocity.0.length() / 1000.0;
+            let speed_normalized = velocity.0.length() / config.max_velocity_for_color;
             //println!("speed_normalized {}", speed_normalized);
             *material = gradient_resource.get_gradient_color_material(&speed_normalized);
         });
@@ -507,6 +546,14 @@ fn color_system(
             let density_normalized = density.far / config.target_density;
             *material = gradient_resource.get_gradient_color_material(&density_normalized);
         });
+
+    //particles_query
+    //    .par_iter_mut()
+    //    .for_each(|(velocity, mut material, density)| {
+    //        let density_normalized = density.far / config.max_density_for_color;
+    //        println!("density_normalized {}", density_normalized);
+    //        *material = gradient_resource.get_gradient_color_material(&density_normalized);
+    //    });
 }
 
 fn bounce_system(
