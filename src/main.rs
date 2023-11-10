@@ -1,29 +1,31 @@
-//! Shows how to render simple primitive shapes with a single color.
-
 use std::{
-    env,
     fs::{self, File},
     io::{Read, Write},
-    time::SystemTime,
 };
 
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
-use bevy_inspector_egui::{
-    prelude::ReflectInspectorOptions,
-    quick::{FilterQueryInspectorPlugin, ResourceInspectorPlugin, WorldInspectorPlugin},
-    InspectorOptions,
-};
-
-use bevy_hanabi::Gradient;
 use bevy_internal::{
-    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::common_conditions::input_toggle_active,
     window::PresentMode,
 };
+
+use bevy::window::PrimaryWindow;
+use bevy::window::Window;
+
+use bevy_inspector_egui::{
+    bevy_egui::{EguiContext, EguiPlugin},
+    egui,
+    prelude::ReflectInspectorOptions,
+    quick::WorldInspectorPlugin,
+    DefaultInspectorConfigPlugin, InspectorOptions,
+};
+
+use bevy_hanabi::Gradient;
 use rand::{thread_rng, Rng};
 
-mod fluid_sim_math;
-use fluid_sim_math::*;
+mod math;
+use math::*;
 
 use serde_json;
 
@@ -42,18 +44,12 @@ struct Density {
 }
 
 #[derive(
-    Resource,
-    Reflect,
-    Default,
-    InspectorOptions,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
+    Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
 )]
 #[reflect(Resource, InspectorOptions)]
-struct Environment {
+struct Config {
+    #[inspector(min = 0, max = 5000, speed = 1.)]
+    num_particles: usize,
     gravity: Vec2,
     #[inspector(min = 0.0, max = 1.0, speed = 0.001)]
     damping: f32,
@@ -66,6 +62,25 @@ struct Environment {
     is_paused: bool,
     start_time: i64,
     auto_save: bool,
+}
+
+const RADIUS: f32 = 4.;
+const MASS: f32 = 1.;
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            gravity: Vec2::new(0., 0.),
+            damping: 0.05,
+            target_density: 2000.,
+            pressure_multiplier: 900.,
+            smoothing_radius: RADIUS * 12.,
+            num_particles: 300,
+            is_paused: false,
+            start_time: Utc::now().timestamp(),
+            auto_save: false,
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -109,9 +124,62 @@ impl GradientResource {
     }
 }
 
+fn inspector_ui(
+    world: &mut World,
+    mut disabled: Local<bool>,
+    mut last_time: Local<f32>,
+    mut last_delta_t: Local<f32>,
+) {
+    let space_pressed = world.resource::<Input<KeyCode>>().just_pressed(KeyCode::H);
+    if space_pressed {
+        *disabled = !*disabled;
+    }
+    if *disabled {
+        return;
+    }
+
+    let time = world.resource::<Time>().clone();
+    if time.elapsed_seconds() - *last_time > 2. {
+        *last_delta_t = time.delta_seconds();
+        *last_time = time.elapsed_seconds();
+    }
+
+    let mut egui_context = world
+        .query_filtered::<&mut EguiContext, With<PrimaryWindow>>()
+        .single(world)
+        .clone();
+
+    egui::Window::new("Config")
+        .default_width(50.)
+        .show(egui_context.get_mut(), |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                bevy_inspector_egui::bevy_inspector::ui_for_resource::<Config>(world, ui);
+
+                ui.separator();
+                ui.label(format!(
+                    "delta_t: {:.6} tps: {:.1}",
+                    *last_delta_t,
+                    if *last_delta_t > 0. {
+                        1. / *last_delta_t
+                    } else {
+                        0.
+                    }
+                ));
+                ui.separator();
+                ui.label("h: toggle ui");
+                ui.label("i: reset config");
+                ui.label("u: load config");
+                ui.label("z: save config");
+                ui.label("n: spawn 1 particle");
+                ui.label("m: spawn 10 particles");
+                ui.label("space: reset positions");
+            });
+        });
+}
+
 fn main() {
-    // load most recent environment from file
-    let environment = load_most_recent_environment_from_file();
+    // load most recent config from file
+    let config = load_most_recent_config_from_file();
 
     App::new()
         .add_plugins((
@@ -127,21 +195,23 @@ fn main() {
             //FrameTimeDiagnosticsPlugin,
             //LogDiagnosticsPlugin::default(),
         ))
+        .add_plugins(EguiPlugin)
+        .add_plugins(DefaultInspectorConfigPlugin)
         .add_plugins(
             WorldInspectorPlugin::default().run_if(input_toggle_active(false, KeyCode::Escape)),
         )
         // the background colors for all cameras
         .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
-        .add_plugins(ResourceInspectorPlugin::<Environment>::default())
-        .insert_resource(environment)
-        .register_type::<Environment>()
+        //.add_plugins(ResourceInspectorPlugin::<Config>::default())
+        .insert_resource(config)
+        .register_type::<Config>()
         .insert_resource(GradientResource::new())
         .add_systems(Startup, setup)
+        .add_systems(Update, inspector_ui)
         .add_systems(
             Update,
             (
                 keyboard_animation_control,
-                debug_system,
                 gravity_system,
                 calculate_density_system,
                 pressure_force_system,
@@ -178,7 +248,7 @@ fn setup(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut gradient_resource: ResMut<GradientResource>,
     windows: Query<&Window>,
-    mut environment: ResMut<Environment>,
+    config: Res<Config>,
 ) {
     let window = windows.single();
     commands.spawn(Camera2dBundle::default());
@@ -186,7 +256,7 @@ fn setup(
     gradient_resource.precompute_materials(&mut materials);
 
     // spawn particles
-    for _ in 0..200 {
+    for _ in 0..config.num_particles {
         let velocity = Vec2::new(0., 0.);
         let transform = get_random_transform(&window);
         commands.spawn((
@@ -238,66 +308,45 @@ fn setup(
     */
 }
 
-const RADIUS: f32 = 4.;
-const DAMPING_DEFAULT: f32 = 0.05;
-const GRAVITY_DEFAULT: Vec2 = Vec2::new(0., 0.); // Vec2::new(0., -9.821);
-
-const TARGET_DENSITY_DEFAULT: f32 = 1500.;
-const PRESSURE_MULTIPLIER_DEFAULT: f32 = 4000.;
-const SMOOTHING_RADIUS_DEFAULT: f32 = RADIUS * 12.0; //120.; // RADIUS * 8.;
-const MASS: f32 = 1.;
-
-fn debug_system(time: Res<Time>, mut last_time: Local<f32>) {
-    // print delta_t
-    if time.elapsed_seconds() - *last_time > (if *last_time == 0. { 2. } else { 10. }) {
-        let delta_t = time.delta_seconds();
-        println!("delta_t: {} tps: {}", delta_t, 1. / delta_t);
-        *last_time = time.elapsed_seconds();
-    }
-}
-
 fn gravity_system(
     time: Res<Time>,
-    environment: Res<Environment>,
-    mut particles_query: Query<(&mut Velocity, &Transform), With<Particle>>,
+    config: Res<Config>,
+    mut particles_query: Query<&mut Velocity, With<Particle>>,
 ) {
-    if environment.is_paused {
+    if config.is_paused {
         return;
     }
 
     let delta_t = time.delta_seconds();
-    if environment.gravity == Vec2::ZERO {
+    if config.gravity == Vec2::ZERO {
         return;
     }
 
-    particles_query
-        .par_iter_mut()
-        .for_each_mut(|(mut velocity, transform)| {
-            // print on direction change
-            //if velocity.0.y > 0. && velocity.0.y + environment.gravity.y * delta_t < 0.
-            //    || velocity.0.y < 0. && velocity.0.y + environment.gravity.y * delta_t > 0.
-            //{
-            //    println!("t translation: {:?}", transform.translation);
-            //}
-
-            velocity.0 += environment.gravity * delta_t * 100.0;
-            //println!("velocity.0.y: {}", velocity.0.y);
-        });
+    particles_query.par_iter_mut().for_each(|mut velocity| {
+        // print on direction change
+        //if velocity.0.y > 0. && velocity.0.y + config.gravity.y * delta_t < 0.
+        //    || velocity.0.y < 0. && velocity.0.y + config.gravity.y * delta_t > 0.
+        //{
+        //    println!("t translation: {:?}", transform.translation);
+        //}
+        velocity.0 += config.gravity * delta_t * 100.0;
+    });
 }
 
 fn calculate_density_system(
     mut particles_query: Query<(&mut Density, &Transform), With<Density>>,
     particles_query2: Query<&Transform, With<Particle>>,
-    environment: Res<Environment>,
+    config: Res<Config>,
 ) {
-    if environment.is_paused {
+    if config.is_paused {
         return;
     }
+
+    //let mut all_densities = Vec::new();
+    //for (mut density, transform) in &mut particles_query {
     particles_query
         .par_iter_mut()
-        .for_each_mut(|(mut density, transform)| {
-            //let mut all_densities = Vec::new();
-            //for (mut density, transform) in &mut particles_query {
+        .for_each(|(mut density, transform)| {
             let mut density_sum = 0.;
             let mut density_near_sum = 0.;
             for transform2 in &particles_query2 {
@@ -306,8 +355,8 @@ fn calculate_density_system(
                 }
                 let distance = (transform2.translation - transform.translation).length();
 
-                density_sum += spiky_kernel_pow_2(&environment.smoothing_radius, &distance);
-                density_near_sum += spiky_kernel_pow_3(&environment.smoothing_radius, &distance);
+                density_sum += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
+                density_near_sum += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
             }
             density.far = density_sum;
             density.near = density_near_sum;
@@ -335,15 +384,15 @@ fn pressure_force_system(
     time: Res<Time>,
     mut particles_query: Query<(&mut Velocity, &Transform, &Density), With<Particle>>,
     particles_query2: Query<(&Transform, &Density), With<Particle>>,
-    environment: Res<Environment>,
+    config: Res<Config>,
 ) {
-    if environment.is_paused {
+    if config.is_paused {
         return;
     }
     let delta_t = time.delta_seconds();
 
     let pressure_from_density = |density: &f32| -> f32 {
-        return (density - environment.target_density) * environment.pressure_multiplier;
+        return (density - config.target_density) * config.pressure_multiplier;
     };
 
     let mut rng = thread_rng();
@@ -352,7 +401,7 @@ fn pressure_force_system(
 
     particles_query
         .par_iter_mut()
-        .for_each_mut(|(mut velocity, transform, density)| {
+        .for_each(|(mut velocity, transform, density)| {
             let mut sum_pressure_force = Vec3::ZERO;
             for (transform2, density2) in &particles_query2 {
                 // skip self
@@ -363,7 +412,7 @@ fn pressure_force_system(
                 let sqrt_dst = offset.length_squared();
 
                 // skip if too far
-                if sqrt_dst > environment.smoothing_radius.powf(2.0) {
+                if sqrt_dst > config.smoothing_radius.powf(2.0) {
                     continue;
                 }
 
@@ -382,12 +431,12 @@ fn pressure_force_system(
                 //    * 0.5;
 
                 sum_pressure_force += -direction
-                    * derivative_spiky_pow_2(&environment.smoothing_radius, &distance)
+                    * derivative_spiky_pow_2(&config.smoothing_radius, &distance)
                     * shared_pressure
                     / density2.far.max(1.);
 
                 //sum_pressure_force += -direction
-                //    * derivative_spiky_pow_3(&environment.smoothing_radius, &distance)
+                //    * derivative_spiky_pow_3(&config.smoothing_radius, &distance)
                 //    * shared_pressure_near
                 //    / density2.near.max(1.);
             }
@@ -402,18 +451,18 @@ fn pressure_force_system(
 }
 
 fn move_system(
-    environment: Res<Environment>,
+    config: Res<Config>,
     time: Res<Time>,
     mut particles_query: Query<(&mut Transform, &Velocity), With<Particle>>,
 ) {
-    if environment.is_paused {
+    if config.is_paused {
         return;
     }
     let delta_t = time.delta_seconds();
 
     particles_query
         .par_iter_mut()
-        .for_each_mut(|(mut transform, velocity)| {
+        .for_each(|(mut transform, velocity)| {
             transform.translation += velocity.0.extend(0.) * delta_t;
             //println!("t translation: {:?}", transform.translation);
         });
@@ -422,18 +471,18 @@ fn move_system(
 // color particles based on their velocity
 // color quads based on their density
 fn color_system(
-    environment: Res<Environment>,
+    config: Res<Config>,
     mut particles_query: Query<(&Velocity, &mut Handle<ColorMaterial>), With<Particle>>,
     mut quads_query: Query<(&Density, &mut Handle<ColorMaterial>), Without<Particle>>,
     gradient_resource: Res<GradientResource>,
 ) {
-    if environment.is_paused {
+    if config.is_paused {
         return;
     }
 
     particles_query
         .par_iter_mut()
-        .for_each_mut(|(velocity, mut material)| {
+        .for_each(|(velocity, mut material)| {
             let speed_normalized = velocity.0.length() / 1000.0;
             //println!("speed_normalized {}", speed_normalized);
             *material = gradient_resource.get_gradient_color_material(&speed_normalized);
@@ -441,18 +490,18 @@ fn color_system(
 
     quads_query
         .par_iter_mut()
-        .for_each_mut(|(density, mut material)| {
-            let density_normalized = density.far / environment.target_density;
+        .for_each(|(density, mut material)| {
+            let density_normalized = density.far / config.target_density;
             *material = gradient_resource.get_gradient_color_material(&density_normalized);
         });
 }
 
 fn bounce_system(
-    environment: Res<Environment>,
+    config: Res<Config>,
     windows: Query<&Window>,
     mut particles_query: Query<(&mut Transform, &mut Velocity), With<Particle>>,
 ) {
-    if environment.is_paused {
+    if config.is_paused {
         return;
     }
     const MARGIN: f32 = 0.;
@@ -465,54 +514,24 @@ fn bounce_system(
 
     particles_query
         .par_iter_mut()
-        .for_each_mut(|(mut transform, mut velocity)| {
+        .for_each(|(mut transform, mut velocity)| {
             let edge_dst = half_size - (transform.translation.abs() + Vec3::splat(RADIUS));
 
             if edge_dst.x <= 0. {
                 // switch direction
-                //println!(
-                //    "translation.x {} edge_dst.x {} velocity.0.x {}",
-                //    transform.translation.x, edge_dst.x, velocity.0.x
-                //);
                 if velocity.0.x.signum() == transform.translation.x.signum() {
-                    velocity.0.x *= -1. * (1.0 - environment.damping);
+                    velocity.0.x *= -1. * (1.0 - config.damping);
                 }
-
                 // move inside
                 transform.translation.x += -transform.translation.x.signum() * edge_dst.x.abs();
-
-                //// reduce velocity to compensate for the move
-                //velocity.0.x -= velocity.0.x.signum() * (edge_dst.x.abs());
-
-                // stop if velocity is too low
-                //if velocity.0.x.abs() < 10. {
-                //    velocity.0.x = 0.;
-                //}
-
-                // increase velocity if too low
-                //if velocity.0.x.abs() < 40. {
-                //    velocity.0.x = velocity.0.x.signum() * 10.;
-                //}
             }
             if edge_dst.y <= 0. {
+                // switch direction
                 if velocity.0.y.signum() == transform.translation.y.signum() {
-                    velocity.0.y = -velocity.0.y * (1.0 - environment.damping);
+                    velocity.0.y = -velocity.0.y * (1.0 - config.damping);
                 }
-
-                //// move inside
+                // move inside
                 transform.translation.y -= transform.translation.y.signum() * edge_dst.y.abs();
-
-                //// reduce velocity to compensate for the move
-                //velocity.0.y -= velocity.0.y.signum() * (edge_dst.y.abs() + 0.01);
-                //
-                //// stop if velocity is too low
-                //if velocity.0.y.abs() < 10. {
-                //    velocity.0.y = 0.;
-                //}
-                // increase velocity if too low
-                //if velocity.0.y.abs() < 40. {
-                //    velocity.0.y = velocity.0.y.signum() * 10.;
-                //}
             }
         });
 }
@@ -526,85 +545,87 @@ fn keyboard_animation_control(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     keyboard_input: Res<Input<KeyCode>>,
-    mut environment: ResMut<Environment>,
+    mut config: ResMut<Config>,
     mut particles_query: Query<(&mut Velocity, &mut Transform), With<Particle>>,
     windows: Query<&Window>,
 ) {
     let window = windows.single();
     let mut key_pressed = false;
+    /*
     let gravity_delta = 0.05;
     if keyboard_input.pressed(KeyCode::Up) {
-        environment.gravity.y += gravity_delta;
+        config.gravity.y += gravity_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::Down) {
-        environment.gravity.y -= gravity_delta;
+        config.gravity.y -= gravity_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::Left) {
-        environment.gravity.x -= gravity_delta;
+        config.gravity.x -= gravity_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::Right) {
-        environment.gravity.x += gravity_delta;
+        config.gravity.x += gravity_delta;
         key_pressed = true;
     }
 
     let damping_delta = 0.001;
     if keyboard_input.pressed(KeyCode::W) {
-        environment.damping += damping_delta;
+        config.damping += damping_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::S) {
-        environment.damping -= damping_delta;
+        config.damping -= damping_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::X) {
-        environment.damping = DAMPING_DEFAULT;
+        config.damping = DAMPING_DEFAULT;
         key_pressed = true;
     }
 
     let target_density_delta = 0.2;
     if keyboard_input.pressed(KeyCode::E) {
-        environment.target_density += target_density_delta;
+        config.target_density += target_density_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::D) {
-        environment.target_density -= target_density_delta;
+        config.target_density -= target_density_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::C) {
-        environment.target_density = TARGET_DENSITY_DEFAULT;
+        config.target_density = TARGET_DENSITY_DEFAULT;
         key_pressed = true;
     }
 
     let pressure_multiplier_delta = 5.;
     if keyboard_input.pressed(KeyCode::R) {
-        environment.pressure_multiplier += pressure_multiplier_delta;
+        config.pressure_multiplier += pressure_multiplier_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::F) {
-        environment.pressure_multiplier -= pressure_multiplier_delta;
+        config.pressure_multiplier -= pressure_multiplier_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::V) {
-        environment.pressure_multiplier = PRESSURE_MULTIPLIER_DEFAULT;
+        config.pressure_multiplier = PRESSURE_MULTIPLIER_DEFAULT;
         key_pressed = true;
     }
 
     let smoothing_radius_delta = 0.5;
     if keyboard_input.pressed(KeyCode::T) {
-        environment.smoothing_radius += smoothing_radius_delta;
+        config.smoothing_radius += smoothing_radius_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::G) {
-        environment.smoothing_radius -= smoothing_radius_delta;
+        config.smoothing_radius -= smoothing_radius_delta;
         key_pressed = true;
     }
     if keyboard_input.pressed(KeyCode::B) {
-        environment.smoothing_radius = SMOOTHING_RADIUS_DEFAULT;
+        config.smoothing_radius = SMOOTHING_RADIUS_DEFAULT;
         key_pressed = true;
     }
+     */
 
     // reset position
     if keyboard_input.just_pressed(KeyCode::Space) {
@@ -617,34 +638,35 @@ fn keyboard_animation_control(
 
     // pause simulation
     if keyboard_input.just_pressed(KeyCode::P) {
-        environment.is_paused = !environment.is_paused;
+        config.is_paused = !config.is_paused;
         key_pressed = true;
     }
 
-    // reset environment
+    // reset config
     if keyboard_input.just_pressed(KeyCode::I) {
-        environment.gravity = GRAVITY_DEFAULT;
-        environment.damping = DAMPING_DEFAULT;
-        environment.target_density = TARGET_DENSITY_DEFAULT;
-        environment.pressure_multiplier = PRESSURE_MULTIPLIER_DEFAULT;
-        environment.smoothing_radius = SMOOTHING_RADIUS_DEFAULT;
-        environment.is_paused = false;
-        environment.start_time = Utc::now().timestamp();
+        *config = Config::default();
 
         key_pressed = true;
     }
 
-    // save environment
+    // save config
     if keyboard_input.just_pressed(KeyCode::Z) {
-        save_environment_to_file(environment.clone());
-        println!("saved environment");
+        save_config_to_file(config.clone());
+        println!("config saved!");
+        key_pressed = true;
+    }
+
+    //load config
+    if keyboard_input.just_pressed(KeyCode::U) {
+        *config = load_most_recent_config_from_file();
+        println!("config loaded!");
         key_pressed = true;
     }
 
     // toggle auto save
     if keyboard_input.just_pressed(KeyCode::K) {
-        environment.auto_save = !environment.auto_save;
-        println!("auto_save: {}", environment.auto_save);
+        config.auto_save = !config.auto_save;
+        println!("auto_save: {}", config.auto_save);
         key_pressed = true;
     }
 
@@ -671,41 +693,38 @@ fn keyboard_animation_control(
                 Particle,
             ));
         }
+        config.num_particles += spawn_num_particles;
         key_pressed = true;
-        // print num particles
-        println!("num particles: {}", particles_query.iter().count() + 1);
     }
 
     // print
     if key_pressed {
         println!(
             "gravity: [{} {}]  edge-damping: {}  target-density: {}  pressure-mult: {}  smoothing-radius: {}",
-            environment.gravity.x, environment.gravity.y, 1. - environment.damping, environment.target_density, environment.pressure_multiplier, environment.smoothing_radius
+            config.gravity.x, config.gravity.y, 1. - config.damping, config.target_density, config.pressure_multiplier, config.smoothing_radius
         );
-        if environment.auto_save {
-            save_environment_to_file(environment.clone());
+        if config.auto_save {
+            save_config_to_file(config.clone());
         }
     }
 }
 
 // serialize animation to file
-// including: struct Environment
+// including: struct Config
 // excluding: particles
 // format: json
 // filename fluid-sim-isoTimestamp.json
-fn save_environment_to_file(environment: Environment) {
-    let start_date = DateTime::from_timestamp(environment.start_time, 0).unwrap();
+fn save_config_to_file(config: Config) {
+    let start_date = DateTime::from_timestamp(config.start_time, 0).unwrap();
     let mut file = File::create(format!(
         "./fluidsim/env-{}.json",
         start_date.to_rfc3339().replace(":", "_")
     ))
     .unwrap();
 
-    // write environment
-    file.write_all(serde_json::to_string(&environment).unwrap().as_bytes())
+    // write config
+    file.write_all(serde_json::to_string(&config).unwrap().as_bytes())
         .unwrap();
-
-    // delete
 }
 
 fn get_most_recent_file() -> Option<fs::DirEntry> {
@@ -735,31 +754,33 @@ fn get_most_recent_file() -> Option<fs::DirEntry> {
     most_recent_file
 }
 
-fn load_most_recent_environment_from_file() -> Environment {
+fn load_most_recent_config_from_file() -> Config {
     // make sure directory exists
     fs::create_dir_all("./fluidsim/").unwrap();
 
     let most_recent_file = get_most_recent_file();
     if most_recent_file.is_none() {
-        println!("no environment file found, using default");
-        return Environment {
-            gravity: GRAVITY_DEFAULT,
-            damping: DAMPING_DEFAULT,
-            target_density: TARGET_DENSITY_DEFAULT,
-            pressure_multiplier: PRESSURE_MULTIPLIER_DEFAULT,
-            smoothing_radius: SMOOTHING_RADIUS_DEFAULT,
-            is_paused: false,
-            start_time: Utc::now().timestamp(),
-            auto_save: false,
-        };
+        println!("no config file found, using default");
+        return Config::default();
     }
     let mut file = File::open(most_recent_file.unwrap().path()).unwrap();
     let mut contents = String::new();
     file.read_to_string(&mut contents).unwrap();
-    let loaded_environment: Environment = serde_json::from_str(&contents).unwrap();
-    println!("loaded environment: {:?}", loaded_environment);
+    let loaded_config: Config = serde_json::from_str(&contents).unwrap();
+    println!("loaded config: {:?}", loaded_config);
 
-    let mut new_environment = loaded_environment.clone();
-    new_environment.start_time = Utc::now().timestamp();
-    new_environment
+    let mut new_config = loaded_config.clone();
+    new_config.start_time = Utc::now().timestamp();
+    new_config
 }
+
+/*
+fn debug_system(time: Res<Time>, mut last_time: Local<f32>) {
+    // print delta_t
+    if time.elapsed_seconds() - *last_time > (if *last_time == 0. { 2. } else { 10. }) {
+        let delta_t = time.delta_seconds();
+        println!("delta_t: {} tps: {}", delta_t, 1. / delta_t);
+        *last_time = time.elapsed_seconds();
+    }
+}
+*/
