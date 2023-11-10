@@ -10,13 +10,14 @@ use std::{
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use bevy_inspector_egui::{
     prelude::ReflectInspectorOptions,
-    quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
+    quick::{FilterQueryInspectorPlugin, ResourceInspectorPlugin, WorldInspectorPlugin},
     InspectorOptions,
 };
 
 use bevy_hanabi::Gradient;
 use bevy_internal::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    input::common_conditions::input_toggle_active,
     window::PresentMode,
 };
 use rand::{thread_rng, Rng};
@@ -54,9 +55,13 @@ struct Density {
 #[reflect(Resource, InspectorOptions)]
 struct Environment {
     gravity: Vec2,
+    #[inspector(min = 0.0, max = 1.0, speed = 0.001)]
     damping: f32,
+    #[inspector(speed = 100.)]
     target_density: f32,
+    #[inspector(speed = 100.)]
     pressure_multiplier: f32,
+    #[inspector(min = 0.0, max = 1000.0, speed = 0.1)]
     smoothing_radius: f32,
     is_paused: bool,
     start_time: i64,
@@ -122,7 +127,9 @@ fn main() {
             //FrameTimeDiagnosticsPlugin,
             //LogDiagnosticsPlugin::default(),
         ))
-        .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(
+            WorldInspectorPlugin::default().run_if(input_toggle_active(false, KeyCode::Escape)),
+        )
         // the background colors for all cameras
         .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
         .add_plugins(ResourceInspectorPlugin::<Environment>::default())
@@ -628,7 +635,7 @@ fn keyboard_animation_control(
     }
 
     // save environment
-    if keyboard_input.just_pressed(KeyCode::O) {
+    if keyboard_input.just_pressed(KeyCode::Z) {
         save_environment_to_file(environment.clone());
         println!("saved environment");
         key_pressed = true;
