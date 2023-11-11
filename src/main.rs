@@ -27,6 +27,9 @@ use rand::{thread_rng, Rng};
 mod math;
 use math::*;
 
+mod spatial_hash;
+use spatial_hash::*;
+
 use serde_json;
 
 use chrono::prelude::{DateTime, Utc};
@@ -55,6 +58,17 @@ fn default_max_density_for_color() -> f32 {
     default_target_density()
 }
 
+#[derive(Reflect, Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq)]
+enum ParticleColorMode {
+    Velocity,
+    Density,
+    CellKey,
+}
+
+fn default_particle_color_mode() -> ParticleColorMode {
+    ParticleColorMode::Velocity
+}
+
 #[derive(
     Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
 )]
@@ -74,9 +88,11 @@ struct Config {
     #[inspector(min = 0.0, max = 10000.0, speed = 1.)]
     #[serde(default = "default_max_velocity_for_color")]
     max_velocity_for_color: f32,
-    #[inspector(min = 0.0, speed = 10.)]
+    #[inspector(min = 0.0000000000001, speed = 10.)]
     #[serde(default = "default_max_density_for_color")]
     max_density_for_color: f32,
+    #[serde(default = "default_particle_color_mode")]
+    particle_color_mode: ParticleColorMode,
     is_paused: bool,
     start_time: i64,
     auto_save: bool,
@@ -96,11 +112,25 @@ impl Default for Config {
             max_velocity_for_color: default_max_velocity_for_color(),
             max_density_for_color: default_max_density_for_color(),
             num_particles: 300,
+            particle_color_mode: default_particle_color_mode(),
             is_paused: false,
             start_time: Utc::now().timestamp(),
             auto_save: false,
         }
     }
+}
+
+#[derive(Default, Clone, Debug)]
+struct SpatialIndex {
+    index: u32,
+    key: u32,
+    hash: u32,
+}
+
+#[derive(Resource)]
+struct SpatialHash {
+    indices: Vec<SpatialIndex>,
+    offsets: Vec<u32>,
 }
 
 #[derive(Resource)]
@@ -141,6 +171,49 @@ impl GradientResource {
         return self.precomputed_materials
             [(ratio.max(0.).min(1.) * (self.precomputed_materials.len() - 1) as f32) as usize]
             .clone();
+    }
+}
+
+#[derive(Resource)]
+struct ColorSchemeCategoricalResource {
+    precomputed_materials: Vec<Handle<ColorMaterial>>,
+}
+
+// https://observablehq.com/@d3/color-schemes
+// set2
+//["#66c2a5","#fc8d62","#8da0cb","#e78ac3","#a6d854","#ffd92f","#e5c494","#b3b3b3"]
+impl ColorSchemeCategoricalResource {
+    fn num_colors() -> usize {
+        8
+    }
+    fn new() -> Self {
+        Self {
+            precomputed_materials: vec![Handle::default(); Self::num_colors()],
+        }
+    }
+
+    fn precompute_materials(&mut self, materials: &mut ResMut<Assets<ColorMaterial>>) {
+        let colors = vec![
+            Color::hex("66c2a5").unwrap(),
+            Color::hex("fc8d62").unwrap(),
+            Color::hex("8da0cb").unwrap(),
+            Color::hex("e78ac3").unwrap(),
+            Color::hex("a6d854").unwrap(),
+            Color::hex("ffd92f").unwrap(),
+            Color::hex("e5c494").unwrap(),
+            Color::hex("b3b3b3").unwrap(),
+        ];
+        for i in 0..colors.len() {
+            self.precomputed_materials[i] = materials.add(colors[i].into());
+        }
+    }
+
+    fn get_color_material_wrapped(&self, index: &usize) -> Handle<ColorMaterial> {
+        return self.precomputed_materials[index % self.precomputed_materials.len()].clone();
+    }
+
+    fn get_wrapped_index(&self, index: &usize) -> usize {
+        return index % Self::num_colors();
     }
 }
 
@@ -239,6 +312,11 @@ fn main() {
         .insert_resource(config)
         .register_type::<Config>()
         .insert_resource(GradientResource::new())
+        .insert_resource(ColorSchemeCategoricalResource::new())
+        .insert_resource(SpatialHash {
+            indices: Vec::<SpatialIndex>::new(),
+            offsets: Vec::new(),
+        })
         .add_systems(Startup, setup)
         .add_systems(Update, inspector_ui)
         .add_systems(
@@ -246,6 +324,7 @@ fn main() {
             (
                 keyboard_animation_control,
                 gravity_system,
+                update_spatial_hash_system,
                 calculate_density_system,
                 pressure_force_system,
                 color_system,
@@ -280,6 +359,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut gradient_resource: ResMut<GradientResource>,
+    mut color_scheme_categorical_resource: ResMut<ColorSchemeCategoricalResource>,
     windows: Query<&Window>,
     config: Res<Config>,
 ) {
@@ -287,6 +367,7 @@ fn setup(
     commands.spawn(Camera2dBundle::default());
 
     gradient_resource.precompute_materials(&mut materials);
+    color_scheme_categorical_resource.precompute_materials(&mut materials);
 
     // spawn particles
     for _ in 0..config.num_particles {
@@ -366,6 +447,79 @@ fn gravity_system(
     });
 }
 
+fn update_spatial_hash_system(
+    mut spatial_hash: ResMut<SpatialHash>,
+    mut particles_query: Query<(&Transform, &Density), With<Particle>>,
+    config: Res<Config>,
+    windows: Query<&Window>,
+) {
+    if config.is_paused {
+        return;
+    }
+
+    let num_particles = particles_query.iter_mut().len();
+
+    // resize
+    if num_particles > spatial_hash.indices.len() {
+        spatial_hash.indices.resize(
+            num_particles,
+            SpatialIndex {
+                index: u32::MAX,
+                key: u32::MAX,
+                hash: u32::MAX,
+            },
+        );
+        spatial_hash.offsets.resize(num_particles, u32::MAX);
+        println!("spatial_hash.indices.len(): {}", spatial_hash.indices.len());
+    }
+
+    // reset offsets
+    spatial_hash
+        .offsets
+        .iter_mut()
+        .for_each(|offset| *offset = u32::MAX);
+
+    // indices
+    let mut new_indices: Vec<SpatialIndex> = Vec::new();
+
+    for (i, (transform, _)) in particles_query.iter_mut().enumerate() {
+        let cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
+        let hash = hash_cell_2d(cell);
+        let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
+        //println!("cell: {:?}  hash: {}  key: {}", cell, hash, key);
+        //spatial_hash.indices[i] = SpatialIndex {
+        new_indices.push(SpatialIndex {
+            index: i as u32,
+            key,
+            hash,
+        });
+    }
+
+    // offsets
+    new_indices.sort_by(|a, b| a.key.partial_cmp(&b.key).unwrap());
+
+    let mut last_key = u32::MAX;
+    // set spatial_hash.offsets to the first index of each hash
+    new_indices.iter().enumerate().for_each(|(i, index)| {
+        if index.key != last_key {
+            spatial_hash.offsets[index.key as usize] = i as u32;
+            last_key = index.key;
+        }
+    });
+
+    spatial_hash.indices = new_indices;
+
+    // print first 20 entries
+    //println!(
+    //    "spatial_hash.indices: {:?}",
+    //    &spatial_hash.indices[0..80.min(spatial_hash.indices.len())]
+    //);
+    //println!(
+    //    "spatial_hash.offsets: {:?}",
+    //    &spatial_hash.offsets[0..20.min(spatial_hash.offsets.len())]
+    //);
+}
+
 fn calculate_density_system(
     mut particles_query: Query<(&mut Density, &Transform), With<Density>>,
     particles_query2: Query<&Transform, With<Particle>>,
@@ -382,6 +536,7 @@ fn calculate_density_system(
         .for_each(|(mut density, transform)| {
             let mut density_sum = 0.;
             let mut density_near_sum = 0.;
+
             for transform2 in &particles_query2 {
                 if transform.translation == transform2.translation {
                     continue;
@@ -505,39 +660,48 @@ fn move_system(
 // color quads based on their density
 fn color_system(
     config: Res<Config>,
-    //mut particles_query: Query<(&Velocity, &mut Handle<ColorMaterial>, &Density), With<Particle>>,
-    mut particles_query: Query<(&Velocity, &mut Handle<ColorMaterial>), With<Particle>>,
+    //mut particles_query_for_density: Query<(&Velocity, &mut Handle<ColorMaterial>, &Density), With<Particle>>,
+    mut particles_query: Query<
+        (&Velocity, &Transform, &Density, &mut Handle<ColorMaterial>),
+        With<Particle>,
+    >,
+    //mut particles_query_for_cell_key: Query<
+    //    (&Transform, &mut Handle<ColorMaterial>),
+    //    With<Particle>,
+    //>,
     mut quads_query: Query<(&Density, &mut Handle<ColorMaterial>), Without<Particle>>,
     gradient_resource: Res<GradientResource>,
+    color_scheme_categorical_resource: Res<ColorSchemeCategoricalResource>,
+    spatial_hash: Res<SpatialHash>,
 ) {
     if config.is_paused {
         return;
     }
 
-    /*
-    let max_velocity = particles_query
-        .iter_mut()
-        .map(|(velocity, _)| velocity.0.length())
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap();
-    let avg_velocity = particles_query
-        .iter_mut()
-        .map(|(velocity, _)| velocity.0.length())
-        .sum::<f32>()
-        / particles_query.iter_mut().len() as f32;
-
-    println!(
-        "max_velocity: {}  avg_velocity: {}",
-        max_velocity, avg_velocity
-    );
-    */
-
     particles_query
         .par_iter_mut()
-        .for_each(|(velocity, mut material)| {
-            let speed_normalized = velocity.0.length() / config.max_velocity_for_color;
-            //println!("speed_normalized {}", speed_normalized);
-            *material = gradient_resource.get_gradient_color_material(&speed_normalized);
+        .for_each(|(velocity, transform, density, mut material)| {
+            if config.particle_color_mode == ParticleColorMode::Velocity {
+                let speed_normalized = velocity.0.length() / config.max_velocity_for_color;
+                //println!("speed_normalized {}", speed_normalized);
+                *material = gradient_resource.get_gradient_color_material(&speed_normalized);
+            } else if config.particle_color_mode == ParticleColorMode::Density {
+                let density_normalized = density.far / config.max_density_for_color;
+                //println!("density_normalized {}", density_normalized);
+                *material = gradient_resource.get_gradient_color_material(&density_normalized);
+            } else if config.particle_color_mode == ParticleColorMode::CellKey {
+                let cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
+                let hash = hash_cell_2d(cell);
+                let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
+                let wrapped_color_index =
+                    color_scheme_categorical_resource.get_wrapped_index(&(key as usize));
+                //println!(
+                //    "{} {} {} {}",
+                //    transform.translation, cell, key, wrapped_color_index
+                //);
+                *material = color_scheme_categorical_resource
+                    .get_color_material_wrapped(&wrapped_color_index);
+            }
         });
 
     quads_query
@@ -546,14 +710,6 @@ fn color_system(
             let density_normalized = density.far / config.target_density;
             *material = gradient_resource.get_gradient_color_material(&density_normalized);
         });
-
-    //particles_query
-    //    .par_iter_mut()
-    //    .for_each(|(velocity, mut material, density)| {
-    //        let density_normalized = density.far / config.max_density_for_color;
-    //        println!("density_normalized {}", density_normalized);
-    //        *material = gradient_resource.get_gradient_color_material(&density_normalized);
-    //    });
 }
 
 fn bounce_system(
