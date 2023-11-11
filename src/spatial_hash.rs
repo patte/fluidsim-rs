@@ -1,6 +1,6 @@
 use bevy::math::Vec2;
 
-static OFFSETS_2D: [Vec2; 9] = [
+pub static OFFSETS_2D: [Vec2; 9] = [
     Vec2::new(-1., 1.),
     Vec2::new(0., 1.),
     Vec2::new(1., 1.),

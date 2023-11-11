@@ -1,8 +1,3 @@
-use std::{
-    fs::{self, File},
-    io::{Read, Write},
-};
-
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use bevy_internal::{
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
@@ -10,18 +5,14 @@ use bevy_internal::{
     window::PresentMode,
 };
 
-use bevy::window::PrimaryWindow;
 use bevy::window::Window;
 
 use bevy_inspector_egui::{
-    bevy_egui::{EguiContext, EguiPlugin},
-    egui::{self, FontId, RichText},
-    prelude::ReflectInspectorOptions,
-    quick::WorldInspectorPlugin,
+    bevy_egui::EguiPlugin, prelude::ReflectInspectorOptions, quick::WorldInspectorPlugin,
     DefaultInspectorConfigPlugin, InspectorOptions,
 };
 
-use bevy_hanabi::Gradient;
+use chrono::prelude::Utc;
 use rand::{thread_rng, Rng};
 
 mod math;
@@ -30,9 +21,18 @@ use math::*;
 mod spatial_hash;
 use spatial_hash::*;
 
-use serde_json;
+use bevy_hanabi::Gradient;
 
-use chrono::prelude::{DateTime, Utc};
+mod colors;
+
+mod ui;
+use ui::*;
+
+mod file_io;
+use file_io::*;
+
+mod utils;
+use utils::*;
 
 #[derive(Component)]
 struct Particle;
@@ -73,7 +73,7 @@ fn default_particle_color_mode() -> ParticleColorMode {
     Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
 )]
 #[reflect(Resource, InspectorOptions)]
-struct Config {
+pub struct Config {
     #[inspector(min = 0, max = 5000, speed = 1.)]
     num_particles: usize,
     gravity: Vec2,
@@ -139,148 +139,9 @@ struct GradientResource {
     precomputed_materials: Vec<Handle<ColorMaterial>>,
 }
 
-impl GradientResource {
-    fn new() -> Self {
-        let mut gradient = Gradient::new();
-        gradient.add_key(0.0, Color::BLUE.into());
-        gradient.add_key(1.0, Color::RED.into());
-
-        Self {
-            gradient,
-            precomputed_materials: vec![Handle::default(); 100],
-        }
-    }
-
-    fn precompute_materials(&mut self, materials: &mut ResMut<Assets<ColorMaterial>>) {
-        let num_precomputed_colors = 100;
-        for i in 0..num_precomputed_colors {
-            let gradient_point: Vec4 = self
-                .gradient
-                .sample(i as f32 / num_precomputed_colors as f32);
-            let color = Color::rgba(
-                gradient_point.x,
-                gradient_point.y,
-                gradient_point.z,
-                gradient_point.w,
-            );
-            self.precomputed_materials[i] = materials.add(color.into());
-        }
-    }
-
-    fn get_gradient_color_material(&self, ratio: &f32) -> Handle<ColorMaterial> {
-        return self.precomputed_materials
-            [(ratio.max(0.).min(1.) * (self.precomputed_materials.len() - 1) as f32) as usize]
-            .clone();
-    }
-}
-
 #[derive(Resource)]
 struct ColorSchemeCategoricalResource {
     precomputed_materials: Vec<Handle<ColorMaterial>>,
-}
-
-// https://observablehq.com/@d3/color-schemes
-// set2
-//["#66c2a5","#fc8d62","#8da0cb","#e78ac3","#a6d854","#ffd92f","#e5c494","#b3b3b3"]
-impl ColorSchemeCategoricalResource {
-    fn num_colors() -> usize {
-        8
-    }
-    fn new() -> Self {
-        Self {
-            precomputed_materials: vec![Handle::default(); Self::num_colors()],
-        }
-    }
-
-    fn precompute_materials(&mut self, materials: &mut ResMut<Assets<ColorMaterial>>) {
-        let colors = vec![
-            Color::hex("66c2a5").unwrap(),
-            Color::hex("fc8d62").unwrap(),
-            Color::hex("8da0cb").unwrap(),
-            Color::hex("e78ac3").unwrap(),
-            Color::hex("a6d854").unwrap(),
-            Color::hex("ffd92f").unwrap(),
-            Color::hex("e5c494").unwrap(),
-            Color::hex("b3b3b3").unwrap(),
-        ];
-        for i in 0..colors.len() {
-            self.precomputed_materials[i] = materials.add(colors[i].into());
-        }
-    }
-
-    fn get_color_material_wrapped(&self, index: &usize) -> Handle<ColorMaterial> {
-        return self.precomputed_materials[index % self.precomputed_materials.len()].clone();
-    }
-
-    fn get_wrapped_index(&self, index: &usize) -> usize {
-        return index % Self::num_colors();
-    }
-}
-
-fn inspector_ui(
-    world: &mut World,
-    mut disabled: Local<bool>,
-    mut last_time: Local<f32>,
-    mut last_delta_t: Local<f32>,
-) {
-    let space_pressed = world.resource::<Input<KeyCode>>().just_pressed(KeyCode::H);
-    if space_pressed {
-        *disabled = !*disabled;
-    }
-    if *disabled {
-        return;
-    }
-
-    let time = world.resource::<Time>().clone();
-    if time.elapsed_seconds() - *last_time > 2. {
-        *last_delta_t = time.delta_seconds();
-        *last_time = time.elapsed_seconds();
-    }
-    let tps = if *last_delta_t > 0. {
-        1. / *last_delta_t
-    } else {
-        0.
-    };
-
-    let mut egui_context = world
-        .query_filtered::<&mut EguiContext, With<PrimaryWindow>>()
-        .single(world)
-        .clone();
-
-    egui::Window::new("Config")
-        .default_width(50.)
-        .show(egui_context.get_mut(), |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                bevy_inspector_egui::bevy_inspector::ui_for_resource::<Config>(world, ui);
-
-                ui.separator();
-                ui.label(
-                    RichText::new(format!(
-                        "{}",
-                        if tps > 300. {
-                            "🚀"
-                        } else if tps > 199. {
-                            "👌"
-                        } else if tps > 120. {
-                            "🐢"
-                        } else {
-                            "🐌"
-                        }
-                    ))
-                    .font(FontId::proportional(40.0)),
-                );
-                ui.label(format!("delta_t: {:.6} tps: {:.1}", *last_delta_t, tps,));
-
-                ui.separator();
-                ui.label("h: toggle ui");
-                ui.label("i: reset config");
-                ui.label("u: load config");
-                ui.label("z: save config");
-                ui.label("n: spawn 1 particle");
-                ui.label("m: spawn 10 particles");
-                ui.label("space: reset positions");
-            });
-        });
 }
 
 fn main() {
@@ -306,7 +167,6 @@ fn main() {
         .add_plugins(
             WorldInspectorPlugin::default().run_if(input_toggle_active(false, KeyCode::Escape)),
         )
-        // the background colors for all cameras
         .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
         //.add_plugins(ResourceInspectorPlugin::<Config>::default())
         .insert_resource(config)
@@ -334,24 +194,6 @@ fn main() {
                 .chain(),
         )
         .run();
-}
-
-fn get_random_transform(window: &Window) -> Transform {
-    let width_half = window.width() / 2.;
-    let height_half = window.height() / 2.;
-
-    let mut rng = thread_rng();
-    let x = rng.gen_range(-width_half..width_half);
-    let y = rng.gen_range(-height_half..height_half);
-    Transform::from_translation(Vec3::new(x, y, 0.))
-}
-
-fn new_circle() -> shape::Circle {
-    shape::Circle {
-        radius: RADIUS,
-        vertices: 4,
-        ..default()
-    }
 }
 
 fn setup(
@@ -925,71 +767,6 @@ fn keyboard_animation_control(
     }
 }
 
-// serialize animation to file
-// including: struct Config
-// excluding: particles
-// format: json
-// filename fluid-sim-isoTimestamp.json
-fn save_config_to_file(config: Config) {
-    let start_date = DateTime::from_timestamp(config.start_time, 0).unwrap();
-    let mut file = File::create(format!(
-        "./fluidsim/env-{}.json",
-        start_date.to_rfc3339().replace(":", "_")
-    ))
-    .unwrap();
-
-    // write config
-    file.write_all(serde_json::to_string(&config).unwrap().as_bytes())
-        .unwrap();
-}
-
-fn get_most_recent_file() -> Option<fs::DirEntry> {
-    let mut files = fs::read_dir("./fluidsim/").unwrap();
-    let mut most_recent_file = None;
-    let mut most_recent_file_timestamp = 0;
-    while let Some(file) = files.next() {
-        let file = file.unwrap();
-        let file_name = file.file_name().into_string().unwrap();
-        if !file_name.starts_with("env-") {
-            continue;
-        }
-        let file_timestamp = file_name
-            .strip_prefix("env-")
-            .unwrap()
-            .strip_suffix(".json")
-            .unwrap()
-            .replace("_", ":")
-            .parse::<DateTime<Utc>>()
-            .unwrap()
-            .timestamp();
-        if file_timestamp > most_recent_file_timestamp {
-            most_recent_file_timestamp = file_timestamp;
-            most_recent_file = Some(file);
-        }
-    }
-    most_recent_file
-}
-
-fn load_most_recent_config_from_file() -> Config {
-    // make sure directory exists
-    fs::create_dir_all("./fluidsim/").unwrap();
-
-    let most_recent_file = get_most_recent_file();
-    if most_recent_file.is_none() {
-        println!("no config file found, using default");
-        return Config::default();
-    }
-    let mut file = File::open(most_recent_file.unwrap().path()).unwrap();
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).unwrap();
-    let loaded_config: Config = serde_json::from_str(&contents).unwrap();
-    println!("loaded config: {:?}", loaded_config);
-
-    let mut new_config = loaded_config.clone();
-    new_config.start_time = Utc::now().timestamp();
-    new_config
-}
-
 /*
 fn debug_system(time: Res<Time>, mut last_time: Local<f32>) {
     // print delta_t
@@ -1000,3 +777,36 @@ fn debug_system(time: Res<Time>, mut last_time: Local<f32>) {
     }
 }
 */
+
+fn process_neighbors<F>(
+    particle_position: Vec2,
+    spatial_hash: &SpatialHash,
+    config: &Config,
+    particles_query: &Query<(&Transform, &Density), With<Particle>>,
+    mut process: F,
+) where
+    F: FnMut(&Transform, &Density),
+{
+    let cell = get_cell_2d(particle_position, config.smoothing_radius);
+    for offset in OFFSETS_2D.iter() {
+        let neighbor_cell = cell + *offset;
+        let hash = hash_cell_2d(neighbor_cell);
+        let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
+        if let Some(&start_index) = spatial_hash.offsets.get(key as usize) {
+            for i in start_index.. {
+                let index_data = spatial_hash.indices.get(i as usize).unwrap();
+                if index_data.key != key {
+                    break;
+                }
+                if index_data.hash != hash {
+                    continue;
+                }
+                particles_query
+                    .iter()
+                    .skip(index_data.index as usize)
+                    .next()
+                    .map(|(transform, density)| process(transform, density));
+            }
+        }
+    }
+}
