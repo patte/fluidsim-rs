@@ -20,7 +20,7 @@ const HASH_K2: u32 = 9737333;
 pub fn get_cell_2d(position: Vec2, radius: f32) -> Vec2 {
     // move negative values into cell
     let position = position + Vec2::new(500., 500.);
-    (position / radius).floor()
+    (position / (radius * 1.1)).floor()
 }
 
 // Hash cell coordinate to a single unsigned integer

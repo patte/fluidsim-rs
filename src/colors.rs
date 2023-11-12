@@ -50,6 +50,16 @@ impl ColorSchemeCategoricalResource {
     }
     pub fn new() -> Self {
         Self {
+            colors: vec![
+                Color::hex("66c2a5").unwrap(),
+                Color::hex("fc8d62").unwrap(),
+                Color::hex("8da0cb").unwrap(),
+                Color::hex("e78ac3").unwrap(),
+                Color::hex("a6d854").unwrap(),
+                Color::hex("ffd92f").unwrap(),
+                Color::hex("e5c494").unwrap(),
+                Color::hex("b3b3b3").unwrap(),
+            ],
             precomputed_materials: vec![Handle::default(); Self::num_colors()],
         }
     }
@@ -72,6 +82,10 @@ impl ColorSchemeCategoricalResource {
 
     pub fn get_color_material_wrapped(&self, index: &usize) -> Handle<ColorMaterial> {
         return self.precomputed_materials[index % self.precomputed_materials.len()].clone();
+    }
+
+    pub fn get_color_wrapped(&self, index: &usize) -> Color {
+        return self.colors[index % self.colors.len()];
     }
 
     pub fn get_wrapped_index(&self, index: &usize) -> usize {

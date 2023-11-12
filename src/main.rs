@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use bevy_internal::{
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
@@ -23,8 +25,6 @@ use spatial_hash::*;
 
 use bevy_hanabi::Gradient;
 
-mod colors;
-
 mod ui;
 use ui::*;
 
@@ -34,13 +34,27 @@ use file_io::*;
 mod utils;
 use utils::*;
 
+mod colors;
+
+#[derive(Resource)]
+struct GradientResource {
+    gradient: Gradient<Vec4>,
+    precomputed_materials: Vec<Handle<ColorMaterial>>,
+}
+
+#[derive(Resource)]
+struct ColorSchemeCategoricalResource {
+    colors: Vec<Color>,
+    precomputed_materials: Vec<Handle<ColorMaterial>>,
+}
+
 #[derive(Component)]
 struct Particle;
 
-#[derive(Component)]
+#[derive(Component, Clone)]
 struct Velocity(Vec2);
 
-#[derive(Component)]
+#[derive(Component, Clone)]
 struct Density {
     far: f32,
     near: f32,
@@ -131,17 +145,7 @@ struct SpatialIndex {
 struct SpatialHash {
     indices: Vec<SpatialIndex>,
     offsets: Vec<u32>,
-}
-
-#[derive(Resource)]
-struct GradientResource {
-    gradient: Gradient<Vec4>,
-    precomputed_materials: Vec<Handle<ColorMaterial>>,
-}
-
-#[derive(Resource)]
-struct ColorSchemeCategoricalResource {
-    precomputed_materials: Vec<Handle<ColorMaterial>>,
+    particles: Vec<(Transform, Velocity, Density)>,
 }
 
 fn main() {
@@ -176,6 +180,7 @@ fn main() {
         .insert_resource(SpatialHash {
             indices: Vec::<SpatialIndex>::new(),
             offsets: Vec::new(),
+            particles: Vec::new(),
         })
         .add_systems(Startup, setup)
         .add_systems(Update, inspector_ui)
@@ -291,7 +296,7 @@ fn gravity_system(
 
 fn update_spatial_hash_system(
     mut spatial_hash: ResMut<SpatialHash>,
-    mut particles_query: Query<(&Transform, &Density), With<Particle>>,
+    mut particles_query: Query<(&Transform, &Density, &Velocity), With<Particle>>,
     config: Res<Config>,
     windows: Query<&Window>,
 ) {
@@ -321,10 +326,12 @@ fn update_spatial_hash_system(
         .iter_mut()
         .for_each(|offset| *offset = u32::MAX);
 
+    spatial_hash.particles.clear();
+
     // indices
     let mut new_indices: Vec<SpatialIndex> = Vec::new();
 
-    for (i, (transform, _)) in particles_query.iter_mut().enumerate() {
+    for (i, (transform, density, velocity)) in particles_query.iter_mut().enumerate() {
         let cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
         let hash = hash_cell_2d(cell);
         let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
@@ -335,6 +342,9 @@ fn update_spatial_hash_system(
             key,
             hash,
         });
+        spatial_hash
+            .particles
+            .push((transform.clone(), velocity.clone(), density.clone()));
     }
 
     // offsets
@@ -366,6 +376,8 @@ fn calculate_density_system(
     mut particles_query: Query<(&mut Density, &Transform), With<Density>>,
     particles_query2: Query<&Transform, With<Particle>>,
     config: Res<Config>,
+    spatial_hash: Res<SpatialHash>,
+    gizmos: Gizmos,
 ) {
     if config.is_paused {
         return;
@@ -373,21 +385,67 @@ fn calculate_density_system(
 
     //let mut all_densities = Vec::new();
     //for (mut density, transform) in &mut particles_query {
+
+    // shared mutable variable
+    let marked = AtomicBool::new(false);
+
     particles_query
         .par_iter_mut()
         .for_each(|(mut density, transform)| {
             let mut density_sum = 0.;
             let mut density_near_sum = 0.;
 
-            for transform2 in &particles_query2 {
-                if transform.translation == transform2.translation {
-                    continue;
-                }
-                let distance = (transform2.translation - transform.translation).length();
+            let mut density_sum2 = 0.;
+            let mut density_near_sum2 = 0.;
 
-                density_sum += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
-                density_near_sum += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
+            // use process_neighbors function
+            process_neighbors(
+                transform,
+                &spatial_hash,
+                &config,
+                |transform_neighbor, _, _| {
+                    let distance =
+                        (transform_neighbor.translation - transform.translation).length();
+
+                        if distance > config.smoothing_radius {
+                            return;
+                        }
+
+                    density_sum += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
+                    density_near_sum += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
+                },
+                false,
+            );
+
+            if !marked.load(Ordering::Relaxed) {
+                marked.store(true, Ordering::Relaxed);
+
+                for transform2 in &particles_query2 {
+                    if transform.translation == transform2.translation {
+                        continue;
+                    }
+                    let distance = (transform2.translation - transform.translation).length();
+
+                    if distance > config.smoothing_radius {
+                        continue;
+                    }
+
+                    density_sum2 += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
+                    density_near_sum2 += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
+                }
+
+                if density_sum != density_sum2 || density_near_sum != density_near_sum2 {
+                    println!(
+                        "d_sum: {}  d_near_sum: {} density_sum: {} error%_sum: {}  error%_near_sum: {}",
+                        density_sum - density_sum2,
+                        density_near_sum - density_near_sum2,
+                        density_sum,
+                        100.* ((density_sum - density_sum2) / density_sum),
+                        100.*((density_near_sum - density_near_sum2) / density_near_sum)
+                    );
+                }
             }
+
             density.far = density_sum;
             density.near = density_near_sum;
 
@@ -413,8 +471,8 @@ fn calculate_density_system(
 fn pressure_force_system(
     time: Res<Time>,
     mut particles_query: Query<(&mut Velocity, &Transform, &Density), With<Particle>>,
-    particles_query2: Query<(&Transform, &Density), With<Particle>>,
     config: Res<Config>,
+    spatial_hash: Res<SpatialHash>,
 ) {
     if config.is_paused {
         return;
@@ -433,43 +491,46 @@ fn pressure_force_system(
         .par_iter_mut()
         .for_each(|(mut velocity, transform, density)| {
             let mut sum_pressure_force = Vec3::ZERO;
-            for (transform2, density2) in &particles_query2 {
-                // skip self
-                if transform.translation == transform2.translation {
-                    continue;
-                }
-                let offset = transform2.translation - transform.translation;
-                let sqrt_dst = offset.length_squared();
 
-                // skip if too far
-                if sqrt_dst > config.smoothing_radius.powf(2.0) {
-                    continue;
-                }
+            process_neighbors(
+                transform,
+                &spatial_hash,
+                &config,
+                |transform2, _, density2| {
+                    let offset = transform2.translation - transform.translation;
+                    let sqrt_dst = offset.length_squared();
 
-                let distance = sqrt_dst.sqrt();
-                let direction = if distance > 0. {
-                    offset / distance
-                } else {
-                    random_direction
-                };
+                    // skip if too far
+                    if sqrt_dst > config.smoothing_radius.powf(2.0) {
+                        return;
+                    }
 
-                let shared_pressure = (pressure_from_density(&density.far)
-                    + pressure_from_density(&density2.far))
-                    * 0.5;
-                //let shared_pressure_near = (pressure_from_density(&density.near)
-                //    + pressure_from_density(&density2.near))
-                //    * 0.5;
+                    let distance = sqrt_dst.sqrt();
+                    let direction = if distance > 0. {
+                        offset / distance
+                    } else {
+                        random_direction
+                    };
 
-                sum_pressure_force += -direction
-                    * derivative_spiky_pow_2(&config.smoothing_radius, &distance)
-                    * shared_pressure
-                    / density2.far.max(1.);
+                    let shared_pressure = (pressure_from_density(&density.far)
+                        + pressure_from_density(&density2.far))
+                        * 0.5;
+                    //let shared_pressure_near = (pressure_from_density(&density.near)
+                    //    + pressure_from_density(&density2.near))
+                    //    * 0.5;
 
-                //sum_pressure_force += -direction
-                //    * derivative_spiky_pow_3(&config.smoothing_radius, &distance)
-                //    * shared_pressure_near
-                //    / density2.near.max(1.);
-            }
+                    sum_pressure_force += -direction
+                        * derivative_spiky_pow_2(&config.smoothing_radius, &distance)
+                        * shared_pressure
+                        / density2.far.max(1.);
+
+                    //sum_pressure_force += -direction
+                    //    * derivative_spiky_pow_3(&config.smoothing_radius, &distance)
+                    //    * shared_pressure_near
+                    //    / density2.near.max(1.);
+                },
+                false,
+            );
             //let acceleration = sum_pressure_force / (density.far * density.near).max(1.);
 
             let acceleration = sum_pressure_force / density.far.max(1.);
@@ -502,20 +563,52 @@ fn move_system(
 // color quads based on their density
 fn color_system(
     config: Res<Config>,
-    //mut particles_query_for_density: Query<(&Velocity, &mut Handle<ColorMaterial>, &Density), With<Particle>>,
     mut particles_query: Query<
         (&Velocity, &Transform, &Density, &mut Handle<ColorMaterial>),
         With<Particle>,
     >,
-    //mut particles_query_for_cell_key: Query<
-    //    (&Transform, &mut Handle<ColorMaterial>),
-    //    With<Particle>,
-    //>,
     mut quads_query: Query<(&Density, &mut Handle<ColorMaterial>), Without<Particle>>,
     gradient_resource: Res<GradientResource>,
     color_scheme_categorical_resource: Res<ColorSchemeCategoricalResource>,
     spatial_hash: Res<SpatialHash>,
+    mut gizmos: Gizmos,
 ) {
+    if config.particle_color_mode == ParticleColorMode::CellKey {
+        let (particle0_transform, _, _) = spatial_hash.particles.get(0).unwrap();
+        let cell = get_cell_2d(
+            particle0_transform.translation.truncate(),
+            config.smoothing_radius,
+        );
+        let hash = hash_cell_2d(cell);
+        let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
+
+        let cell_color = color_scheme_categorical_resource
+            .get_color_wrapped(&(key as usize))
+            .clone();
+        let cell_color = Color::rgba(cell_color.r(), cell_color.g(), cell_color.b(), 0.6);
+
+        // draw circle with smoothing_radius around particle0
+        gizmos.circle_2d(
+            particle0_transform.translation.truncate(),
+            config.smoothing_radius,
+            Color::rgba(1., 1., 1., 0.3),
+        );
+
+        process_neighbors(
+            particle0_transform,
+            &spatial_hash,
+            &config,
+            |transform, _, _| {
+                // draw line to each neighbor
+                gizmos.line_2d(
+                    transform.translation.truncate(),
+                    particle0_transform.translation.truncate(),
+                    cell_color,
+                );
+            },
+            false,
+        );
+    }
     if config.is_paused {
         return;
     }
@@ -537,10 +630,6 @@ fn color_system(
                 let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
                 let wrapped_color_index =
                     color_scheme_categorical_resource.get_wrapped_index(&(key as usize));
-                //println!(
-                //    "{} {} {} {}",
-                //    transform.translation, cell, key, wrapped_color_index
-                //);
                 *material = color_scheme_categorical_resource
                     .get_color_material_wrapped(&wrapped_color_index);
             }
@@ -779,33 +868,60 @@ fn debug_system(time: Res<Time>, mut last_time: Local<f32>) {
 */
 
 fn process_neighbors<F>(
-    particle_position: Vec2,
+    transform: &Transform,
     spatial_hash: &SpatialHash,
     config: &Config,
-    particles_query: &Query<(&Transform, &Density), With<Particle>>,
     mut process: F,
+    mark: bool,
 ) where
-    F: FnMut(&Transform, &Density),
+    F: FnMut(&Transform, &Velocity, &Density),
 {
-    let cell = get_cell_2d(particle_position, config.smoothing_radius);
+    let original_cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
+    let original_hash = hash_cell_2d(original_cell);
+    let original_key = key_from_hash(original_hash, spatial_hash.indices.len() as u32);
+
+    if mark {
+        println!(
+            "original_cell: {:?}  hash: {}  key: {}",
+            original_cell, original_hash, original_key
+        );
+    }
+
     for offset in OFFSETS_2D.iter() {
-        let neighbor_cell = cell + *offset;
-        let hash = hash_cell_2d(neighbor_cell);
+        let cell = original_cell + *offset;
+        let hash = hash_cell_2d(cell);
         let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
+
+        if mark {
+            println!(
+                "  offset: {} cell: {:?}  hash: {}  key: {}",
+                offset, cell, hash, key
+            );
+        }
+
         if let Some(&start_index) = spatial_hash.offsets.get(key as usize) {
-            for i in start_index.. {
+            for i in start_index as usize..spatial_hash.indices.len() - 1 {
+                if mark {
+                    println!("    start_index: {} i: {}", start_index, i);
+                }
                 let index_data = spatial_hash.indices.get(i as usize).unwrap();
+
                 if index_data.key != key {
                     break;
                 }
                 if index_data.hash != hash {
                     continue;
                 }
-                particles_query
-                    .iter()
-                    .skip(index_data.index as usize)
-                    .next()
-                    .map(|(transform, density)| process(transform, density));
+                let (transform_neighbor, velocity_neighbor, density_neighbor) = spatial_hash
+                    .particles
+                    .get(index_data.index as usize)
+                    .unwrap();
+
+                if transform.translation == transform_neighbor.translation {
+                    continue;
+                }
+
+                process(transform_neighbor, velocity_neighbor, density_neighbor);
             }
         }
     }
