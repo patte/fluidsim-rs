@@ -89,60 +89,8 @@ fn default_max_density_for_color() -> f32 {
     default_target_density()
 }
 
-#[derive(Component)]
-struct PredictedPosition(Vec2);
-
-#[derive(
-    Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
-)]
-#[reflect(Resource, InspectorOptions)]
-pub struct Config {
-    #[inspector(min = 0, max = 5000, speed = 1.)]
-    num_particles: usize,
-    gravity: Vec2,
-    #[inspector(min = 0.0, max = 1.0, speed = 0.001)]
-    damping: f32,
-    #[inspector(speed = 10.)]
-    target_density: f32,
-    #[inspector(speed = 10.)]
-    pressure_multiplier: f32,
-    #[inspector(min = 0.0, max = 1000.0, speed = 0.1)]
-    smoothing_radius: f32,
-    #[inspector(min = 0.0, max = 10000.0, speed = 1.)]
-    #[serde(default = "default_max_velocity_for_color")]
-    max_velocity_for_color: f32,
-    #[inspector(min = 0.0000000000001, speed = 10.)]
-    #[serde(default = "default_max_density_for_color")]
-    max_density_for_color: f32,
-    #[serde(default = "default_particle_color_mode")]
-    particle_color_mode: ParticleColorMode,
-    is_paused: bool,
-    start_time: i64,
-    auto_save: bool,
-}
-
-const RADIUS: f32 = 4.;
-const MASS: f32 = 1.;
-const TIME_STEP: f64 = 1. / 160.;
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            gravity: Vec2::new(0., 0.),
-            damping: 0.05,
-            target_density: default_target_density(),
-            pressure_multiplier: 900.,
-            smoothing_radius: RADIUS * 12.,
-            max_velocity_for_color: default_max_velocity_for_color(),
-            max_density_for_color: default_max_density_for_color(),
-            num_particles: 300,
-            particle_color_mode: default_particle_color_mode(),
-            is_paused: false,
-            start_time: Utc::now().timestamp(),
-            auto_save: false,
-        }
-    }
-}
+#[derive(Component, Clone)]
+struct PredictedPosition(Vec3);
 
 #[derive(Default, Clone, Debug)]
 struct SpatialIndex {
@@ -155,7 +103,66 @@ struct SpatialIndex {
 struct SpatialHash {
     indices: Vec<SpatialIndex>,
     offsets: Vec<u32>,
-    particles: Vec<(Transform, Velocity, Density)>,
+    particles: Vec<(Vec3, PredictedPosition, Velocity, Density)>,
+}
+
+#[derive(
+    Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
+)]
+#[reflect(Resource, InspectorOptions)]
+pub struct Config {
+    #[inspector(min = 0, max = 5000, speed = 1.)]
+    num_particles: usize,
+    gravity: Vec2,
+    #[inspector(min = 0.0, max = 1.0, speed = 0.001)]
+    damping: f32,
+    #[inspector(min = 0.0, speed = 10.)]
+    target_density: f32,
+    #[inspector(min = 0.0, speed = 10.)]
+    pressure_multiplier: f32,
+    #[inspector(min = 0.0, speed = 10.)]
+    #[serde(default)]
+    near_pressure_multiplier: f32,
+    #[inspector(min = 0.0, max = 1000.0, speed = 0.1)]
+    smoothing_radius: f32,
+    #[inspector(min = 0.0, max = 10000.0, speed = 1.)]
+    #[serde(default = "default_max_velocity_for_color")]
+    max_velocity_for_color: f32,
+    #[inspector(min = 0.0000000000001, speed = 0.001)]
+    #[serde(default = "default_max_density_for_color")]
+    max_density_for_color: f32,
+    #[serde(default = "default_particle_color_mode")]
+    particle_color_mode: ParticleColorMode,
+    #[serde(default)]
+    mark_sample_particle_neighbors: bool,
+    is_paused: bool,
+    start_time: i64,
+    auto_save: bool,
+}
+
+const RADIUS: f32 = 4.;
+const MASS: f32 = 1.;
+const TIME_STEP: f64 = 1. / 400.;
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            gravity: Vec2::new(0., 0.),
+            damping: 0.05,
+            target_density: default_target_density(),
+            pressure_multiplier: 900.,
+            near_pressure_multiplier: 2.,
+            smoothing_radius: RADIUS * 12.,
+            max_velocity_for_color: default_max_velocity_for_color(),
+            max_density_for_color: default_max_density_for_color(),
+            num_particles: 300,
+            particle_color_mode: default_particle_color_mode(),
+            mark_sample_particle_neighbors: false,
+            is_paused: false,
+            start_time: Utc::now().timestamp(),
+            auto_save: false,
+        }
+    }
 }
 
 fn main() {
@@ -232,7 +239,6 @@ fn setup(
 
     // spawn particles
     for _ in 0..config.num_particles {
-        let velocity = Vec2::new(0., 0.);
         let transform = get_random_transform(&window);
         commands.spawn((
             MaterialMesh2dBundle {
@@ -241,12 +247,12 @@ fn setup(
                 transform,
                 ..default()
             },
-            Velocity(velocity),
+            PredictedPosition(transform.translation.clone()),
+            Velocity(Vec2::ZERO),
             Density {
                 far: MASS,
                 near: MASS,
             },
-            PredictedPosition(Vec2::ZERO),
             Particle,
         ));
     }
@@ -300,20 +306,17 @@ fn measurements_system(
 fn gravity_system(
     time: Res<Time>,
     config: Res<Config>,
-    mut particles_query: Query<(&Transform, &mut Velocity, &mut PredictedPosition), With<Particle>>,
+    mut particles_query: Query<(&Transform, &mut PredictedPosition, &mut Velocity), With<Particle>>,
 ) {
     if config.is_paused {
         return;
     }
 
     let delta_t = time.delta_seconds();
-    if config.gravity == Vec2::ZERO {
-        return;
-    }
 
     particles_query
         .par_iter_mut()
-        .for_each(|(transform, mut velocity, mut predicted_position)| {
+        .for_each(|(transform, mut predicted_position, mut velocity)| {
             // print on direction change
             //if velocity.0.y > 0. && velocity.0.y + config.gravity.y * delta_t < 0.
             //    || velocity.0.y < 0. && velocity.0.y + config.gravity.y * delta_t > 0.
@@ -321,14 +324,17 @@ fn gravity_system(
             //    println!("t translation: {:?}", transform.translation);
             //}
             velocity.0 += config.gravity * delta_t;
-            predicted_position.0 = transform.translation.truncate() * velocity.0 * (1. / 120.);
-            // fixed prediction time
+            // fixed time step
+            predicted_position.0 = transform.translation; // + velocity.0.extend(0.) * (1. / 1600.);
         });
 }
 
 fn update_spatial_hash_system(
     mut spatial_hash: ResMut<SpatialHash>,
-    mut particles_query: Query<(&Transform, &Density, &Velocity), With<Particle>>,
+    mut particles_query: Query<
+        (&Transform, &PredictedPosition, &Density, &Velocity),
+        With<Particle>,
+    >,
     config: Res<Config>,
 ) {
     if config.is_paused {
@@ -362,8 +368,10 @@ fn update_spatial_hash_system(
     // indices
     let mut new_indices: Vec<SpatialIndex> = Vec::new();
 
-    for (i, (transform, density, velocity)) in particles_query.iter_mut().enumerate() {
-        let cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
+    for (i, (transform, predicted_position, density, velocity)) in
+        particles_query.iter_mut().enumerate()
+    {
+        let cell = get_cell_2d(predicted_position.0.truncate(), config.smoothing_radius);
         let hash = hash_cell_2d(cell);
         let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
         //println!("cell: {:?}  hash: {}  key: {}", cell, hash, key);
@@ -373,9 +381,12 @@ fn update_spatial_hash_system(
             key,
             hash,
         });
-        spatial_hash
-            .particles
-            .push((transform.clone(), velocity.clone(), density.clone()));
+        spatial_hash.particles.push((
+            transform.translation.clone(),
+            predicted_position.clone(),
+            velocity.clone(),
+            density.clone(),
+        ));
     }
 
     // offsets
@@ -404,8 +415,8 @@ fn update_spatial_hash_system(
 }
 
 fn calculate_density_system(
-    mut particles_query: Query<(&mut Density, &Transform), With<Density>>,
-    particles_query2: Query<&Transform, With<Particle>>,
+    mut particles_query: Query<(&PredictedPosition, &mut Density), With<Density>>,
+    particles_query2: Query<&PredictedPosition, With<Particle>>,
     config: Res<Config>,
     spatial_hash: Res<SpatialHash>,
 ) {
@@ -417,11 +428,11 @@ fn calculate_density_system(
     //for (mut density, transform) in &mut particles_query {
 
     // shared mutable variable
-    let marked = AtomicBool::new(true);
+    //let marked = AtomicBool::new(true);
 
     particles_query
         .par_iter_mut()
-        .for_each(|(mut density, transform)| {
+        .for_each(|(predicted_position, mut density)| {
             let mut density_sum = 0.;
             let mut density_near_sum = 0.;
 
@@ -430,23 +441,26 @@ fn calculate_density_system(
 
             // use process_neighbors function
             process_neighbors(
-                transform,
+                &predicted_position.0,
                 &spatial_hash,
                 &config,
-                |transform_neighbor, _, _| {
-                    let distance =
-                        (transform_neighbor.translation - transform.translation).length();
+                |_, neighbor_predicted_position, _, _| {
+                    let sqrt_dst =
+                        (neighbor_predicted_position.0 - predicted_position.0).length_squared();
 
-                    if distance.powf(2.0) > config.smoothing_radius.powf(2.0) {
+                    // skip if too far
+                    if sqrt_dst > config.smoothing_radius.powf(2.0) {
                         return;
                     }
 
+                    let distance = sqrt_dst.sqrt();
                     density_sum += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
                     density_near_sum += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
                 },
                 false,
             );
 
+            /*
             if !marked.load(Ordering::Relaxed) {
                 marked.store(true, Ordering::Relaxed);
 
@@ -475,10 +489,11 @@ fn calculate_density_system(
                     );
                 }
             }
+            */
 
             // TODO: check if others need scaling to, extract into config
-            density.far = density_sum*1000.;
-            density.near = density_near_sum*1000.;
+            density.far = density_sum * 1000.;
+            density.near = density_near_sum * 1000.;
 
             //all_densities.push(density.far);
         });
@@ -501,7 +516,7 @@ fn calculate_density_system(
 
 fn pressure_force_system(
     time: Res<Time>,
-    mut particles_query: Query<(&mut Velocity, &Transform, &Density), With<Particle>>,
+    mut particles_query: Query<(&PredictedPosition, &mut Velocity, &Density), With<Particle>>,
     config: Res<Config>,
     spatial_hash: Res<SpatialHash>,
 ) {
@@ -514,21 +529,25 @@ fn pressure_force_system(
         return (density - config.target_density) * config.pressure_multiplier;
     };
 
+    let near_pressure_from_density = |density: &f32| -> f32 {
+        return -density * config.near_pressure_multiplier;
+    };
+
     let mut rng = thread_rng();
     let random_direction =
         Vec3::new(rng.gen_range(-1. ..1.), rng.gen_range(-1. ..1.), 0.).normalize();
 
     particles_query
         .par_iter_mut()
-        .for_each(|(mut velocity, transform, density)| {
+        .for_each(|(predicted_position, mut velocity, density)| {
             let mut sum_pressure_force = Vec3::ZERO;
 
             process_neighbors(
-                transform,
+                &predicted_position.0,
                 &spatial_hash,
                 &config,
-                |transform2, _, density2| {
-                    let offset = transform2.translation - transform.translation;
+                |_, predicted_position2, _, density2| {
+                    let offset = predicted_position2.0 - predicted_position.0;
                     let sqrt_dst = offset.length_squared();
 
                     // skip if too far
@@ -546,8 +565,8 @@ fn pressure_force_system(
                     let shared_pressure = (pressure_from_density(&density.far)
                         + pressure_from_density(&density2.far))
                         * 0.5;
-                    let shared_pressure_near = (pressure_from_density(&density.near)
-                        + pressure_from_density(&density2.near))
+                    let shared_pressure_near = (near_pressure_from_density(&density.near)
+                        + near_pressure_from_density(&density2.near))
                         * 0.5;
 
                     sum_pressure_force += -direction
@@ -617,9 +636,11 @@ fn bounce_system(
 
                 // if on the edge, apply force inwards
                 // TODO: check this again
+                /*
                 if edge_dst.x > -1. {
                     velocity.0.x += -transform.translation.x.signum() * 2.;
                 }
+                */
 
                 // move inside
                 transform.translation.x += -transform.translation.x.signum() * edge_dst.x.abs();
@@ -632,9 +653,11 @@ fn bounce_system(
 
                 // if on the edge, apply force inwards
                 // TODO: check this again
+                /*
                 if edge_dst.y > -1. {
                     velocity.0.y += -transform.translation.y.signum() * 2.;
                 }
+                */
 
                 // move inside
                 transform.translation.y -= transform.translation.y.signum() * edge_dst.y.abs();
@@ -656,12 +679,9 @@ fn color_system(
     spatial_hash: Res<SpatialHash>,
     mut gizmos: Gizmos,
 ) {
-    if config.particle_color_mode == ParticleColorMode::CellKey {
-        let (particle0_transform, _, _) = spatial_hash.particles.get(0).unwrap();
-        let cell = get_cell_2d(
-            particle0_transform.translation.truncate(),
-            config.smoothing_radius,
-        );
+    if config.mark_sample_particle_neighbors && spatial_hash.particles.len() > 0 {
+        let (particle0_position, _, _, _) = spatial_hash.particles.get(0).unwrap();
+        let cell = get_cell_2d(particle0_position.truncate(), config.smoothing_radius);
         let hash = hash_cell_2d(cell);
         let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
 
@@ -672,20 +692,20 @@ fn color_system(
 
         // draw circle with smoothing_radius around particle0
         gizmos.circle_2d(
-            particle0_transform.translation.truncate(),
+            particle0_position.truncate(),
             config.smoothing_radius,
             Color::rgba(1., 1., 1., 0.3),
         );
 
         process_neighbors(
-            particle0_transform,
+            &particle0_position,
             &spatial_hash,
             &config,
-            |transform, _, _| {
+            |neighbor_position, _, _, _| {
                 // draw line to each neighbor
                 gizmos.line_2d(
-                    transform.translation.truncate(),
-                    particle0_transform.translation.truncate(),
+                    neighbor_position.truncate(),
+                    particle0_position.truncate(),
                     cell_color,
                 );
             },
@@ -707,7 +727,9 @@ fn color_system(
                 let density_normalized = density.far / config.max_density_for_color;
                 //println!("density_normalized {}", density_normalized);
                 *material = gradient_resource.get_gradient_color_material(&density_normalized);
-            } else if config.particle_color_mode == ParticleColorMode::CellKey {
+            } else if config.particle_color_mode == ParticleColorMode::CellKey
+                && spatial_hash.indices.len() > 0
+            {
                 let cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
                 let hash = hash_cell_2d(cell);
                 let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
@@ -871,6 +893,7 @@ fn keyboard_animation_control(
                     transform: get_random_transform(window),
                     ..default()
                 },
+                PredictedPosition(Vec3::ZERO),
                 Velocity(Vec2::new(0., 0.)),
                 Density {
                     far: MASS,
@@ -896,15 +919,15 @@ fn keyboard_animation_control(
 }
 
 fn process_neighbors<F>(
-    transform: &Transform,
+    me_position: &Vec3,
     spatial_hash: &SpatialHash,
     config: &Config,
     mut process: F,
     mark: bool,
 ) where
-    F: FnMut(&Transform, &Velocity, &Density),
+    F: FnMut(&Vec3, &PredictedPosition, &Velocity, &Density),
 {
-    let original_cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
+    let original_cell = get_cell_2d(me_position.truncate(), config.smoothing_radius);
     let original_hash = hash_cell_2d(original_cell);
     let original_key = key_from_hash(original_hash, spatial_hash.indices.len() as u32);
 
@@ -941,12 +964,17 @@ fn process_neighbors<F>(
                 if index_data.hash != hash {
                     continue;
                 }
-                let (transform_neighbor, velocity_neighbor, density_neighbor) = spatial_hash
+                let (
+                    neighbor_position,
+                    neighbor_predicted_position,
+                    neighbor_velocity,
+                    neighbor_density,
+                ) = spatial_hash
                     .particles
                     .get(index_data.index as usize)
                     .unwrap();
 
-                if transform.translation == transform_neighbor.translation {
+                if me_position.x == neighbor_position.x && me_position.y == neighbor_position.y {
                     if self_processed {
                         continue;
                     }
@@ -954,7 +982,12 @@ fn process_neighbors<F>(
                     continue;
                 }
 
-                process(transform_neighbor, velocity_neighbor, density_neighbor);
+                process(
+                    neighbor_position,
+                    neighbor_predicted_position,
+                    neighbor_velocity,
+                    neighbor_density,
+                );
             }
         }
     }
