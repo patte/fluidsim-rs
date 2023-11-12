@@ -48,33 +48,6 @@ struct ColorSchemeCategoricalResource {
     precomputed_materials: Vec<Handle<ColorMaterial>>,
 }
 
-#[derive(Component)]
-struct Particle;
-
-#[derive(Component, Clone)]
-struct Velocity(Vec2);
-
-#[derive(Component, Clone)]
-struct Density {
-    far: f32,
-    near: f32,
-}
-
-#[derive(Component)]
-struct PredictedPosition(Vec2);
-
-fn default_max_velocity_for_color() -> f32 {
-    1000.0
-}
-
-fn default_target_density() -> f32 {
-    2000.0
-}
-
-fn default_max_density_for_color() -> f32 {
-    default_target_density()
-}
-
 #[derive(Reflect, Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq)]
 enum ParticleColorMode {
     Velocity,
@@ -85,6 +58,39 @@ enum ParticleColorMode {
 fn default_particle_color_mode() -> ParticleColorMode {
     ParticleColorMode::Velocity
 }
+
+#[derive(Resource, Default)]
+pub struct Measurements {
+    delta_t: f32,
+    tps: f32,
+}
+
+#[derive(Component)]
+struct Particle;
+
+#[derive(Component, Clone)]
+struct Velocity(Vec2);
+
+fn default_max_velocity_for_color() -> f32 {
+    1000.0
+}
+
+#[derive(Component, Clone)]
+struct Density {
+    far: f32,
+    near: f32,
+}
+
+fn default_target_density() -> f32 {
+    2000.0
+}
+
+fn default_max_density_for_color() -> f32 {
+    default_target_density()
+}
+
+#[derive(Component)]
+struct PredictedPosition(Vec2);
 
 #[derive(
     Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
@@ -136,12 +142,6 @@ impl Default for Config {
             auto_save: false,
         }
     }
-}
-
-#[derive(Resource, Default)]
-pub struct Measurements {
-    delta_t: f32,
-    tps: f32,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -588,6 +588,60 @@ fn move_system(
         });
 }
 
+fn bounce_system(
+    config: Res<Config>,
+    windows: Query<&Window>,
+    mut particles_query: Query<(&mut Transform, &mut Velocity), With<Particle>>,
+) {
+    if config.is_paused {
+        return;
+    }
+    const MARGIN: f32 = 0.;
+
+    let window = windows.single();
+    let width = window.width() - MARGIN;
+    let height = window.height() - MARGIN;
+
+    let half_size = Vec3::new(width / 2., height / 2., 0.0);
+
+    particles_query
+        .par_iter_mut()
+        .for_each(|(mut transform, mut velocity)| {
+            let edge_dst = half_size - (transform.translation.abs() + Vec3::splat(RADIUS));
+
+            if edge_dst.x <= 0. {
+                // switch direction
+                if velocity.0.x.signum() == transform.translation.x.signum() {
+                    velocity.0.x *= -1. * (1.0 - config.damping);
+                }
+
+                // if on the edge, apply force inwards
+                // TODO: check this again
+                if edge_dst.x > -1. {
+                    velocity.0.x += -transform.translation.x.signum() * 2.;
+                }
+
+                // move inside
+                transform.translation.x += -transform.translation.x.signum() * edge_dst.x.abs();
+            }
+            if edge_dst.y <= 0. {
+                // switch direction
+                if velocity.0.y.signum() == transform.translation.y.signum() {
+                    velocity.0.y = -velocity.0.y * (1.0 - config.damping);
+                }
+
+                // if on the edge, apply force inwards
+                // TODO: check this again
+                if edge_dst.y > -1. {
+                    velocity.0.y += -transform.translation.y.signum() * 2.;
+                }
+
+                // move inside
+                transform.translation.y -= transform.translation.y.signum() * edge_dst.y.abs();
+            }
+        });
+}
+
 // color particles based on their velocity
 // color quads based on their density
 fn color_system(
@@ -672,64 +726,6 @@ fn color_system(
         });
 }
 
-fn bounce_system(
-    config: Res<Config>,
-    windows: Query<&Window>,
-    mut particles_query: Query<(&mut Transform, &mut Velocity), With<Particle>>,
-) {
-    if config.is_paused {
-        return;
-    }
-    const MARGIN: f32 = 0.;
-
-    let window = windows.single();
-    let width = window.width() - MARGIN;
-    let height = window.height() - MARGIN;
-
-    let half_size = Vec3::new(width / 2., height / 2., 0.0);
-
-    particles_query
-        .par_iter_mut()
-        .for_each(|(mut transform, mut velocity)| {
-            let edge_dst = half_size - (transform.translation.abs() + Vec3::splat(RADIUS));
-
-            if edge_dst.x <= 0. {
-                // switch direction
-                if velocity.0.x.signum() == transform.translation.x.signum() {
-                    velocity.0.x *= -1. * (1.0 - config.damping);
-                }
-
-                // if on the edge, apply force inwards
-                // TODO: check this again
-                if edge_dst.x > -1. {
-                    velocity.0.x += -transform.translation.x.signum() * 2.;
-                }
-
-                // move inside
-                transform.translation.x += -transform.translation.x.signum() * edge_dst.x.abs();
-            }
-            if edge_dst.y <= 0. {
-                // switch direction
-                if velocity.0.y.signum() == transform.translation.y.signum() {
-                    velocity.0.y = -velocity.0.y * (1.0 - config.damping);
-                }
-
-                // if on the edge, apply force inwards
-                // TODO: check this again
-                if edge_dst.y > -1. {
-                    velocity.0.y += -transform.translation.y.signum() * 2.;
-                }
-
-                // move inside
-                transform.translation.y -= transform.translation.y.signum() * edge_dst.y.abs();
-            }
-        });
-}
-
-//
-//
-//
-//
 fn keyboard_animation_control(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -898,17 +894,6 @@ fn keyboard_animation_control(
         }
     }
 }
-
-/*
-fn debug_system(time: Res<Time>, mut last_time: Local<f32>) {
-    // print delta_t
-    if time.elapsed_seconds() - *last_time > (if *last_time == 0. { 2. } else { 10. }) {
-        let delta_t = time.delta_seconds();
-        println!("delta_t: {} tps: {}", delta_t, 1. / delta_t);
-        *last_time = time.elapsed_seconds();
-    }
-}
-*/
 
 fn process_neighbors<F>(
     transform: &Transform,
