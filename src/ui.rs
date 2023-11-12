@@ -8,6 +8,7 @@ use bevy_inspector_egui::{
 };
 
 use super::Config;
+use super::Measurements;
 
 pub fn inspector_ui(
     world: &mut World,
@@ -28,11 +29,15 @@ pub fn inspector_ui(
         *last_delta_t = time.delta_seconds();
         *last_time = time.elapsed_seconds();
     }
-    let tps = if *last_delta_t > 0. {
+    let tps_local = if *last_delta_t > 0. {
         1. / *last_delta_t
     } else {
         0.
     };
+
+    let measurements = world.resource::<Measurements>().clone();
+    let delta_t = measurements.delta_t;
+    let tps = measurements.tps;
 
     let mut egui_context = world
         .query_filtered::<&mut EguiContext, With<PrimaryWindow>>()
@@ -61,7 +66,11 @@ pub fn inspector_ui(
                     ))
                     .font(FontId::proportional(40.0)),
                 );
-                ui.label(format!("delta_t: {:.6} tps: {:.1}", *last_delta_t, tps,));
+                ui.label(format!("delta_t: {:.6} tps: {:.1}", delta_t, tps,));
+                ui.label(format!(
+                    "delta_t: {:.6} tps: {:.1}",
+                    *last_delta_t, tps_local,
+                ));
 
                 ui.separator();
                 ui.label("h: toggle ui");

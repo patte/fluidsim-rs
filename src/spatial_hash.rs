@@ -19,8 +19,9 @@ const HASH_K2: u32 = 9737333;
 // Convert floating point position into an integer cell coordinate
 pub fn get_cell_2d(position: Vec2, radius: f32) -> Vec2 {
     // move negative values into cell
-    let position = position + Vec2::new(500., 500.);
-    (position / (radius * 1.1)).floor()
+    // TODO: should be half window size, to move negative values into positive
+    let position = position + Vec2::new(3000., 3000.);
+    (position / radius).floor()
 }
 
 // Hash cell coordinate to a single unsigned integer

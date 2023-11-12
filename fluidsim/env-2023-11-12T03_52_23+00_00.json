@@ -1,0 +1,1 @@
+{"num_particles":1000,"gravity":[0.0,0.0],"damping":0.12,"target_density":660.0,"pressure_multiplier":11000.0,"smoothing_radius":64.6,"max_velocity_for_color":830.0,"max_density_for_color":1.0,"particle_color_mode":"Velocity","is_paused":false,"start_time":1699761143,"auto_save":false}

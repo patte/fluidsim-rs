@@ -60,6 +60,9 @@ struct Density {
     near: f32,
 }
 
+#[derive(Component)]
+struct PredictedPosition(Vec2);
+
 fn default_max_velocity_for_color() -> f32 {
     1000.0
 }
@@ -114,6 +117,7 @@ pub struct Config {
 
 const RADIUS: f32 = 4.;
 const MASS: f32 = 1.;
+const TIME_STEP: f64 = 1. / 160.;
 
 impl Default for Config {
     fn default() -> Self {
@@ -132,6 +136,12 @@ impl Default for Config {
             auto_save: false,
         }
     }
+}
+
+#[derive(Resource, Default)]
+pub struct Measurements {
+    delta_t: f32,
+    tps: f32,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -182,22 +192,26 @@ fn main() {
             offsets: Vec::new(),
             particles: Vec::new(),
         })
+        .insert_resource(Measurements::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, inspector_ui)
         .add_systems(
             Update,
+            (inspector_ui, keyboard_animation_control, color_system),
+        )
+        .add_systems(
+            FixedUpdate,
             (
-                keyboard_animation_control,
+                measurements_system,
                 gravity_system,
                 update_spatial_hash_system,
                 calculate_density_system,
                 pressure_force_system,
-                color_system,
                 move_system,
                 bounce_system,
             )
                 .chain(),
         )
+        .insert_resource(Time::<Fixed>::from_seconds(TIME_STEP))
         .run();
 }
 
@@ -232,6 +246,7 @@ fn setup(
                 far: MASS,
                 near: MASS,
             },
+            PredictedPosition(Vec2::ZERO),
             Particle,
         ));
     }
@@ -253,8 +268,8 @@ fn setup(
             commands.spawn((
                 MaterialMesh2dBundle {
                     mesh: meshes
-                    .add(shape::Quad::new(Vec2::new(size / 2., size / 2.)).into())
-                    .into(),
+                        .add(shape::Quad::new(Vec2::new(size / 2., size / 2.)).into())
+                        .into(),
                     material: materials.add(ColorMaterial::from(Color::WHITE)),
                     transform: Transform::from_translation(Vec3::new(x, y, -0.2)),
                     ..default()
@@ -266,13 +281,26 @@ fn setup(
             ));
         }
     }
-    */
+         */
+}
+
+fn measurements_system(
+    time: Res<Time>,
+    mut measurements: ResMut<Measurements>,
+    config: Res<Config>,
+) {
+    if config.is_paused {
+        return;
+    }
+
+    measurements.delta_t = time.delta_seconds();
+    measurements.tps = 1. / measurements.delta_t;
 }
 
 fn gravity_system(
     time: Res<Time>,
     config: Res<Config>,
-    mut particles_query: Query<&mut Velocity, With<Particle>>,
+    mut particles_query: Query<(&Transform, &mut Velocity, &mut PredictedPosition), With<Particle>>,
 ) {
     if config.is_paused {
         return;
@@ -283,22 +311,25 @@ fn gravity_system(
         return;
     }
 
-    particles_query.par_iter_mut().for_each(|mut velocity| {
-        // print on direction change
-        //if velocity.0.y > 0. && velocity.0.y + config.gravity.y * delta_t < 0.
-        //    || velocity.0.y < 0. && velocity.0.y + config.gravity.y * delta_t > 0.
-        //{
-        //    println!("t translation: {:?}", transform.translation);
-        //}
-        velocity.0 += config.gravity * delta_t * 100.0;
-    });
+    particles_query
+        .par_iter_mut()
+        .for_each(|(transform, mut velocity, mut predicted_position)| {
+            // print on direction change
+            //if velocity.0.y > 0. && velocity.0.y + config.gravity.y * delta_t < 0.
+            //    || velocity.0.y < 0. && velocity.0.y + config.gravity.y * delta_t > 0.
+            //{
+            //    println!("t translation: {:?}", transform.translation);
+            //}
+            velocity.0 += config.gravity * delta_t;
+            predicted_position.0 = transform.translation.truncate() * velocity.0 * (1. / 120.);
+            // fixed prediction time
+        });
 }
 
 fn update_spatial_hash_system(
     mut spatial_hash: ResMut<SpatialHash>,
     mut particles_query: Query<(&Transform, &Density, &Velocity), With<Particle>>,
     config: Res<Config>,
-    windows: Query<&Window>,
 ) {
     if config.is_paused {
         return;
@@ -377,7 +408,6 @@ fn calculate_density_system(
     particles_query2: Query<&Transform, With<Particle>>,
     config: Res<Config>,
     spatial_hash: Res<SpatialHash>,
-    gizmos: Gizmos,
 ) {
     if config.is_paused {
         return;
@@ -387,7 +417,7 @@ fn calculate_density_system(
     //for (mut density, transform) in &mut particles_query {
 
     // shared mutable variable
-    let marked = AtomicBool::new(false);
+    let marked = AtomicBool::new(true);
 
     particles_query
         .par_iter_mut()
@@ -407,9 +437,9 @@ fn calculate_density_system(
                     let distance =
                         (transform_neighbor.translation - transform.translation).length();
 
-                        if distance > config.smoothing_radius {
-                            return;
-                        }
+                    if distance.powf(2.0) > config.smoothing_radius.powf(2.0) {
+                        return;
+                    }
 
                     density_sum += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
                     density_near_sum += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
@@ -426,7 +456,7 @@ fn calculate_density_system(
                     }
                     let distance = (transform2.translation - transform.translation).length();
 
-                    if distance > config.smoothing_radius {
+                    if distance.powf(2.0) > config.smoothing_radius.powf(2.0) {
                         continue;
                     }
 
@@ -446,8 +476,9 @@ fn calculate_density_system(
                 }
             }
 
-            density.far = density_sum;
-            density.near = density_near_sum;
+            // TODO: check if others need scaling to, extract into config
+            density.far = density_sum*1000.;
+            density.near = density_near_sum*1000.;
 
             //all_densities.push(density.far);
         });
@@ -515,26 +546,24 @@ fn pressure_force_system(
                     let shared_pressure = (pressure_from_density(&density.far)
                         + pressure_from_density(&density2.far))
                         * 0.5;
-                    //let shared_pressure_near = (pressure_from_density(&density.near)
-                    //    + pressure_from_density(&density2.near))
-                    //    * 0.5;
+                    let shared_pressure_near = (pressure_from_density(&density.near)
+                        + pressure_from_density(&density2.near))
+                        * 0.5;
 
                     sum_pressure_force += -direction
                         * derivative_spiky_pow_2(&config.smoothing_radius, &distance)
                         * shared_pressure
                         / density2.far.max(1.);
 
-                    //sum_pressure_force += -direction
-                    //    * derivative_spiky_pow_3(&config.smoothing_radius, &distance)
-                    //    * shared_pressure_near
-                    //    / density2.near.max(1.);
+                    sum_pressure_force += -direction
+                        * derivative_spiky_pow_3(&config.smoothing_radius, &distance)
+                        * shared_pressure_near
+                        / density2.near.max(1.);
                 },
                 false,
             );
-            //let acceleration = sum_pressure_force / (density.far * density.near).max(1.);
 
-            let acceleration = sum_pressure_force / density.far.max(1.);
-
+            let acceleration = sum_pressure_force / (density.far * density.near).max(1.);
             //println!("acceleration {:?}", acceleration);
             velocity.0.x += acceleration.x * delta_t;
             velocity.0.y += acceleration.y * delta_t;
@@ -638,7 +667,7 @@ fn color_system(
     quads_query
         .par_iter_mut()
         .for_each(|(density, mut material)| {
-            let density_normalized = density.far / config.target_density;
+            let density_normalized = density.far / config.max_density_for_color;
             *material = gradient_resource.get_gradient_color_material(&density_normalized);
         });
 }
@@ -669,6 +698,13 @@ fn bounce_system(
                 if velocity.0.x.signum() == transform.translation.x.signum() {
                     velocity.0.x *= -1. * (1.0 - config.damping);
                 }
+
+                // if on the edge, apply force inwards
+                // TODO: check this again
+                if edge_dst.x > -1. {
+                    velocity.0.x += -transform.translation.x.signum() * 2.;
+                }
+
                 // move inside
                 transform.translation.x += -transform.translation.x.signum() * edge_dst.x.abs();
             }
@@ -677,6 +713,13 @@ fn bounce_system(
                 if velocity.0.y.signum() == transform.translation.y.signum() {
                     velocity.0.y = -velocity.0.y * (1.0 - config.damping);
                 }
+
+                // if on the edge, apply force inwards
+                // TODO: check this again
+                if edge_dst.y > -1. {
+                    velocity.0.y += -transform.translation.y.signum() * 2.;
+                }
+
                 // move inside
                 transform.translation.y -= transform.translation.y.signum() * edge_dst.y.abs();
             }
@@ -900,6 +943,7 @@ fn process_neighbors<F>(
         }
 
         if let Some(&start_index) = spatial_hash.offsets.get(key as usize) {
+            let mut self_processed = false;
             for i in start_index as usize..spatial_hash.indices.len() - 1 {
                 if mark {
                     println!("    start_index: {} i: {}", start_index, i);
@@ -918,6 +962,10 @@ fn process_neighbors<F>(
                     .unwrap();
 
                 if transform.translation == transform_neighbor.translation {
+                    if self_processed {
+                        continue;
+                    }
+                    self_processed = true;
                     continue;
                 }
 
