@@ -38,6 +38,11 @@ pub fn inspector_ui(
     let measurements = world.resource::<Measurements>().clone();
     let delta_t = measurements.delta_t;
     let tps = measurements.tps;
+    let p0_position = measurements.p0_position;
+    let p0_predicted_position = measurements.p0_predicted_position;
+    let p0_velocity = measurements.p0_velocity;
+    let p0_density = measurements.p0_density;
+    let p0_max_density_far = measurements.p0_max_density_far;
 
     let mut egui_context = world
         .query_filtered::<&mut EguiContext, With<PrimaryWindow>>()
@@ -46,6 +51,7 @@ pub fn inspector_ui(
 
     egui::Window::new("Config")
         .default_width(50.)
+        .default_height(600.)
         .show(egui_context.get_mut(), |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 bevy_inspector_egui::bevy_inspector::ui_for_resource::<Config>(world, ui);
@@ -71,8 +77,19 @@ pub fn inspector_ui(
                     "delta_t: {:.6} tps: {:.1}",
                     *last_delta_t, tps_local,
                 ));
-
                 ui.separator();
+                if p0_position != Vec3::ZERO {
+                    ui.label(format!("position     : {:?}", p0_position));
+                    ui.label(format!("pred position: {:?}", p0_predicted_position));
+                    ui.label(format!("velocity     : {:?}", p0_velocity));
+                    ui.label(format!("density      : {:?}", p0_density.far));
+                    ui.label(format!("density near : {:?}", p0_density.near));
+                    ui.label(format!(
+                        "max density : {:?}",
+                        p0_max_density_far.to_string()
+                    ));
+                    ui.separator();
+                }
                 ui.label("h: toggle ui");
                 ui.label("i: reset config");
                 ui.label("u: load config");

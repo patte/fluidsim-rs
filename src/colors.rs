@@ -9,6 +9,7 @@ impl GradientResource {
     pub fn new() -> Self {
         let mut gradient = Gradient::new();
         gradient.add_key(0.0, Color::BLUE.into());
+        gradient.add_key(0.5, Color::GREEN.into());
         gradient.add_key(1.0, Color::RED.into());
 
         Self {
