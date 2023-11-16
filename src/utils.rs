@@ -30,6 +30,9 @@ pub fn get_position_in_grid(config: &Config, i: usize) -> Transform {
     let startX = -width_particles / 2.;
     let startY = -width_particles / 2.;
 
+    let mut rng = thread_rng();
+    //let random_direction = Vec2::new(rng.gen_range(-1. ..1.), rng.gen_range(-1. ..1.)).normalize();
+
     Transform::from_translation(Vec3::new(
         startX + (i % num_particles_per_row) as f32 * gap_between_particles,
         startY + (i / num_particles_per_row) as f32 * gap_between_particles,
