@@ -49,6 +49,8 @@ pub fn inspector_ui(
         .single(world)
         .clone();
 
+    let config = world.resource::<Config>().clone();
+
     egui::Window::new("Config")
         .default_width(50.)
         .default_height(600.)
@@ -78,7 +80,7 @@ pub fn inspector_ui(
                     *last_delta_t, tps_local,
                 ));
                 ui.separator();
-                if p0_position != Vec3::ZERO {
+                if config.mark_sample_particle_neighbors {
                     ui.label(format!("position     : {:?}", p0_position));
                     ui.label(format!("pred position: {:?}", p0_predicted_position));
                     ui.label(format!("velocity     : {:?}", p0_velocity));

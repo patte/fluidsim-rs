@@ -111,7 +111,6 @@ struct PredictedPosition(Vec3);
 
 #[derive(Clone, Debug)]
 struct SpatialIndex {
-    //index: usize,
     key: u32,
     hash: u32,
     entity_id: Entity,
@@ -120,7 +119,6 @@ struct SpatialIndex {
 impl Default for SpatialIndex {
     fn default() -> Self {
         Self {
-            //index: usize::MAX,
             key: u32::MAX,
             hash: u32::MAX,
             entity_id: Entity::from_raw(0),
@@ -135,6 +133,18 @@ struct SpatialHash {
     first_entity_id: Entity,
 }
 
+fn get_default_interaction_input_strength() -> f32 {
+    40.
+}
+
+fn get_default_interaction_input_radius() -> f32 {
+    2.
+}
+
+fn get_default_time_scale() -> f32 {
+    1.
+}
+
 #[derive(
     Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
 )]
@@ -145,19 +155,19 @@ pub struct Config {
     gravity: Vec2,
     #[inspector(min = 0.0, max = 1.0, speed = 0.01)]
     damping: f32,
-    #[inspector(speed = 0.1)]
+    #[inspector(min = 0.0, speed = 0.1)]
     target_density: f32,
-    #[inspector(speed = 0.1)]
+    #[inspector(min = 0.0, speed = 0.1)]
     pressure_multiplier: f32,
-    #[inspector(speed = 0.1)]
+    #[inspector(min = 0.0, speed = 0.1)]
     #[serde(default)]
     near_pressure_multiplier: f32,
-    #[inspector(min = 0.0, max = 1000.0, speed = 0.005)]
+    #[inspector(min = 0.0000001, max = 1000.0, speed = 0.005)]
     smoothing_radius: f32,
-    #[inspector(min = 0.01, max = 10000.0, speed = 0.001)]
+    #[inspector(min = 0.01, max = 10000.0, speed = 0.1)]
     #[serde(default = "default_max_velocity_for_color")]
     max_velocity_for_color: f32,
-    #[inspector(min = 0.01, speed = 0.001)]
+    #[inspector(min = 0.01, speed = 0.1)]
     #[serde(default = "default_max_density_for_color")]
     max_density_for_color: f32,
     #[serde(default = "default_particle_color_mode")]
@@ -166,6 +176,15 @@ pub struct Config {
     mark_sample_particle_neighbors: bool,
     #[serde(default = "default_bounding_box")]
     bounding_box: BoundingBox,
+    #[inspector(min = 0.0)]
+    #[serde(default = "get_default_interaction_input_strength")]
+    interaction_input_strength: f32,
+    #[inspector(min = 0.0)]
+    #[serde(default = "get_default_interaction_input_radius")]
+    interaction_input_radius: f32,
+    #[inspector(min = 0.0, max = 5.0, speed = 0.01)]
+    #[serde(default = "get_default_time_scale")]
+    time_scale: f32,
     is_paused: bool,
     #[serde(default)]
     pause_after_next_frame: bool,
@@ -176,7 +195,7 @@ pub struct Config {
 const MASS: f32 = 1.;
 const TIME_STEP: f64 = 1. / 180.;
 pub const SCALE_FACTOR: f32 = 0.02;
-const CIRCLE_RATIO: f32 = 0.15;
+const CIRCLE_RATIO: f32 = 0.10;
 
 impl Default for Config {
     fn default() -> Self {
@@ -193,12 +212,21 @@ impl Default for Config {
             particle_color_mode: default_particle_color_mode(),
             mark_sample_particle_neighbors: false,
             bounding_box: default_bounding_box(),
+            interaction_input_strength: 90.,
+            interaction_input_radius: 2.,
+            time_scale: 1.,
             is_paused: false,
             pause_after_next_frame: false,
             start_time: Utc::now().timestamp(),
             auto_save: false,
         }
     }
+}
+
+#[derive(Resource)]
+struct InteractionInputs {
+    point: Option<Vec2>,
+    strength: f32,
 }
 
 fn main() {
@@ -235,10 +263,19 @@ fn main() {
             first_entity_id: Entity::from_raw(0),
         })
         .insert_resource(Measurements::default())
+        .insert_resource(InteractionInputs {
+            point: None,
+            strength: 0.,
+        })
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (inspector_ui, keyboard_animation_control, color_system),
+            (
+                inspector_ui,
+                keyboard_interaction_system,
+                mouse_interaction_system,
+                color_system,
+            ),
         )
         .add_systems(
             FixedUpdate,
@@ -368,17 +405,38 @@ fn gravity_system(
     time: Res<Time>,
     config: Res<Config>,
     mut particles_query: Query<(&Transform, &mut PredictedPosition, &mut Velocity), With<Particle>>,
+    interaction_inputs: Res<InteractionInputs>,
 ) {
     if config.is_paused {
         return;
     }
 
-    let delta_t = time.delta_seconds();
+    let delta_t = time.delta_seconds() * config.time_scale;
 
     particles_query
         .par_iter_mut()
         .for_each(|(transform, mut predicted_position, mut velocity)| {
-            velocity.0 += config.gravity * delta_t;
+            let mut acceleration = config.gravity;
+
+            if interaction_inputs.strength != 0. {
+                let input_point_offset =
+                    interaction_inputs.point.unwrap() - transform.translation.xy();
+                let sqr_dst = input_point_offset.length_squared();
+                if sqr_dst < config.interaction_input_radius.powf(2.) {
+                    let dst = sqr_dst.sqrt();
+                    let edge_t = dst / config.interaction_input_radius;
+                    let centre_t = 1. - edge_t;
+                    let dir_to_centre = input_point_offset / dst;
+
+                    let gravity_weight = 1. - (centre_t * (interaction_inputs.strength / 10.));
+
+                    acceleration = acceleration * gravity_weight
+                        + dir_to_centre * centre_t * interaction_inputs.strength;
+                    acceleration -= velocity.0 * centre_t;
+                }
+            }
+
+            velocity.0 += acceleration * delta_t;
             predicted_position.0 =
                 transform.translation + velocity.0.extend(0.) * (TIME_STEP as f32 / 2.);
         });
@@ -409,12 +467,6 @@ fn update_spatial_hash_system(
         println!("spatial_hash.indices.len(): {}", spatial_hash.indices.len());
     }
 
-    // reset offsets
-    spatial_hash
-        .offsets
-        .iter_mut()
-        .for_each(|offset| *offset = usize::MAX);
-
     // new indices
     let mut new_indices: Vec<SpatialIndex> = Vec::new();
 
@@ -437,6 +489,12 @@ fn update_spatial_hash_system(
 
     // sort by key
     new_indices.sort_by(|a, b| a.key.partial_cmp(&b.key).unwrap());
+
+    // reset offsets
+    spatial_hash
+        .offsets
+        .iter_mut()
+        .for_each(|offset| *offset = usize::MAX);
 
     // set spatial_hash.offsets to the first index of each hash
     let mut last_key = u32::MAX;
@@ -521,7 +579,7 @@ fn pressure_force_system(
     if config.is_paused {
         return;
     }
-    let delta_t = time.delta_seconds();
+    let delta_t = time.delta_seconds() * config.time_scale;
 
     let pressure_from_density = |density: f32| -> f32 {
         return (density - config.target_density) * config.pressure_multiplier;
@@ -531,8 +589,9 @@ fn pressure_force_system(
         return density * config.near_pressure_multiplier;
     };
 
-    let mut rng = thread_rng();
-    let random_direction = Vec2::new(rng.gen_range(-1. ..1.), rng.gen_range(-1. ..1.)).normalize();
+    //let mut rng = thread_rng();
+    //let random_direction = Vec2::new(rng.gen_range(-1. ..1.), rng.gen_range(-1. ..1.)).normalize();
+    let random_direction = Vec2::new(0., 1.);
 
     particles_query.par_iter_mut().for_each(
         |(entity_id, predicted_position, mut velocity, density)| {
@@ -596,7 +655,7 @@ fn move_system(
     if config.is_paused {
         return;
     }
-    let delta_t = time.delta_seconds();
+    let delta_t = time.delta_seconds() * config.time_scale;
 
     particles_query
         .par_iter_mut()
@@ -774,7 +833,7 @@ fn color_system(
         });
 }
 
-fn keyboard_animation_control(
+fn keyboard_interaction_system(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -787,12 +846,9 @@ fn keyboard_animation_control(
 
     // reset position
     if keyboard_input.just_pressed(KeyCode::Space) {
-        //with index
         for (i, (mut velocity, mut transform)) in &mut particles_query.iter_mut().enumerate() {
-            //for (mut velocity, mut transform) in &mut particles_query {
             velocity.0 = Vec2::ZERO;
             transform.translation = get_position_in_grid(&config, i).translation;
-            //transform.translation = get_random_transform(&config).translation;
         }
         measurements.p0_max_density_far = 0.;
         key_pressed = true;
@@ -877,6 +933,31 @@ fn keyboard_animation_control(
         );
         if config.auto_save {
             save_config_to_file(config.clone());
+        }
+    }
+}
+
+fn mouse_interaction_system(
+    q_windows: Query<&Window, With<bevy_internal::window::PrimaryWindow>>,
+    buttons: Res<Input<MouseButton>>,
+    config: Res<Config>,
+    mut interaction_inputs: ResMut<InteractionInputs>,
+) {
+    let window = q_windows.single();
+    if let Some(position) = window.cursor_position() {
+        let x = (position.x - (window.width() / 2.)) * SCALE_FACTOR;
+        let y = -(position.y - (window.height() / 2.)) * SCALE_FACTOR;
+        let interaction_pos = Vec2::new(x, y);
+
+        if buttons.pressed(MouseButton::Left) {
+            interaction_inputs.point = Some(interaction_pos);
+            interaction_inputs.strength = config.interaction_input_strength;
+        } else if buttons.pressed(MouseButton::Right) {
+            interaction_inputs.point = Some(interaction_pos);
+            interaction_inputs.strength = -config.interaction_input_strength;
+        } else {
+            interaction_inputs.point = None;
+            interaction_inputs.strength = 0.;
         }
     }
 }
