@@ -145,6 +145,10 @@ fn get_default_time_scale() -> f32 {
     1.
 }
 
+fn get_default_prediction_time_scale() -> f32 {
+    0.5
+}
+
 #[derive(
     Resource, Reflect, InspectorOptions, serde::Serialize, serde::Deserialize, Debug, Clone, Copy,
 )]
@@ -185,6 +189,9 @@ pub struct Config {
     #[inspector(min = 0.0, max = 5.0, speed = 0.01)]
     #[serde(default = "get_default_time_scale")]
     time_scale: f32,
+    #[inspector(min = 0.0, max = 6.0, speed = 0.01)]
+    #[serde(default = "get_default_prediction_time_scale")]
+    prediction_time_scale: f32,
     is_paused: bool,
     #[serde(default)]
     pause_after_next_frame: bool,
@@ -215,6 +222,7 @@ impl Default for Config {
             interaction_input_strength: 90.,
             interaction_input_radius: 2.,
             time_scale: 1.,
+            prediction_time_scale: 0.5,
             is_paused: false,
             pause_after_next_frame: false,
             start_time: Utc::now().timestamp(),
@@ -274,7 +282,6 @@ fn main() {
                 inspector_ui,
                 keyboard_interaction_system,
                 mouse_interaction_system,
-                color_system,
             ),
         )
         .add_systems(
@@ -288,6 +295,7 @@ fn main() {
                 move_system,
                 sync_meshes_system,
                 bounce_system,
+                color_system,
             )
                 .chain(),
         )
@@ -397,7 +405,7 @@ fn measurements_system(
         return;
     }
 
-    measurements.delta_t = time.delta_seconds();
+    measurements.delta_t = time.delta_seconds() * config.time_scale;
     measurements.tps = 1. / measurements.delta_t;
 }
 
@@ -437,8 +445,8 @@ fn gravity_system(
             }
 
             velocity.0 += acceleration * delta_t;
-            predicted_position.0 =
-                transform.translation + velocity.0.extend(0.) * (TIME_STEP as f32 / 2.);
+            predicted_position.0 = transform.translation
+                + velocity.0.extend(0.) * (delta_t as f32 * config.prediction_time_scale);
         });
 }
 
