@@ -1,6 +1,5 @@
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use bevy_internal::{
-    ecs::query::WorldQuery,
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::common_conditions::input_toggle_active,
     sprite::Mesh2dHandle,
@@ -15,7 +14,7 @@ use bevy_inspector_egui::{
 };
 
 use chrono::prelude::Utc;
-use rand::{seq::index, thread_rng, Rng};
+use rand::{thread_rng, Rng};
 
 mod math;
 use math::*;
@@ -86,11 +85,6 @@ fn default_bounding_box() -> BoundingBox {
 #[derive(Component)]
 struct Particle;
 
-/*
-#[derive(Component, Clone, Debug)]
-struct Index(usize);
-*/
-
 #[derive(Component, Clone, Debug)]
 struct Velocity(Vec2);
 
@@ -105,11 +99,11 @@ struct Density {
 }
 
 fn default_target_density() -> f32 {
-    0.1
+    55.
 }
 
 fn default_max_density_for_color() -> f32 {
-    default_target_density()
+    default_target_density() * 1.5
 }
 
 #[derive(Component, Clone, Debug)]
@@ -180,22 +174,22 @@ pub struct Config {
 }
 
 const MASS: f32 = 1.;
-const TIME_STEP: f64 = 1. / 180.; // 1/180
-pub const SCALE_FACTOR: f32 = 0.02; //0.08; // 0.01;
+const TIME_STEP: f64 = 1. / 180.;
+pub const SCALE_FACTOR: f32 = 0.02;
 const CIRCLE_RATIO: f32 = 0.15;
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            gravity: Vec2::new(0., 0.),
-            damping: 0.05,
+            gravity: Vec2::new(0., -9.81),
+            damping: 0.2,
             target_density: default_target_density(),
-            pressure_multiplier: 10.,
-            near_pressure_multiplier: 2.,
-            smoothing_radius: 0.2,
+            pressure_multiplier: 450.,
+            near_pressure_multiplier: 7.,
+            smoothing_radius: 0.35,
             max_velocity_for_color: default_max_velocity_for_color(),
             max_density_for_color: default_max_density_for_color(),
-            num_particles: 3000,
+            num_particles: 2048,
             particle_color_mode: default_particle_color_mode(),
             mark_sample_particle_neighbors: false,
             bounding_box: default_bounding_box(),
@@ -208,7 +202,6 @@ impl Default for Config {
 }
 
 fn main() {
-    // load most recent config from file
     let config = load_most_recent_config_from_file();
 
     App::new()
@@ -256,7 +249,7 @@ fn main() {
                 measurements_system,
                 pressure_force_system,
                 move_system,
-                sync_system,
+                sync_meshes_system,
                 bounce_system,
             )
                 .chain(),
@@ -350,7 +343,8 @@ fn measurements_system(
     particles_query: Query<(&Transform, &PredictedPosition, &Velocity, &Density), With<Particle>>,
     spatial_hash: Res<SpatialHash>,
 ) {
-    if spatial_hash.first_entity_id != Entity::from_raw(0) {
+    if config.mark_sample_particle_neighbors && spatial_hash.first_entity_id != Entity::from_raw(0)
+    {
         let (p0_position, p0_predicted_position, p0_velocity, p0_density) =
             particles_query.get(spatial_hash.first_entity_id).unwrap();
         measurements.p0_position = p0_position.translation.clone();
@@ -384,14 +378,7 @@ fn gravity_system(
     particles_query
         .par_iter_mut()
         .for_each(|(transform, mut predicted_position, mut velocity)| {
-            // print on direction change
-            //if velocity.0.y > 0. && velocity.0.y + config.gravity.y * delta_t < 0.
-            //    || velocity.0.y < 0. && velocity.0.y + config.gravity.y * delta_t > 0.
-            //{
-            //    println!("t translation: {:?}", transform.translation);
-            //}
             velocity.0 += config.gravity * delta_t;
-            // fixed time step
             predicted_position.0 =
                 transform.translation + velocity.0.extend(0.) * (TIME_STEP as f32 / 2.);
         });
@@ -399,10 +386,7 @@ fn gravity_system(
 
 fn update_spatial_hash_system(
     mut spatial_hash: ResMut<SpatialHash>,
-    mut particles_query: Query<
-        (Entity, &Transform, &PredictedPosition, &Density, &Velocity),
-        With<Particle>,
-    >,
+    mut particles_query: Query<(Entity, &PredictedPosition), With<Particle>>,
     config: Res<Config>,
 ) {
     if config.is_paused {
@@ -416,7 +400,6 @@ fn update_spatial_hash_system(
         spatial_hash.indices.resize(
             num_particles,
             SpatialIndex {
-                //index: usize::MAX,
                 key: u32::MAX,
                 hash: u32::MAX,
                 entity_id: Entity::from_raw(0),
@@ -432,23 +415,17 @@ fn update_spatial_hash_system(
         .iter_mut()
         .for_each(|offset| *offset = usize::MAX);
 
-    // indices
+    // new indices
     let mut new_indices: Vec<SpatialIndex> = Vec::new();
 
+    // remember first entity id
     let mut first_entity_id = Entity::from_raw(0);
 
-    // particles_query.par_iter_mut().for_each(
-    //|(i, transform, predicted_position, density, velocity)| {
-    for (i, (entity_id, transform, predicted_position, density, velocity)) in
-        particles_query.iter_mut().enumerate()
-    {
+    for (entity_id, predicted_position) in particles_query.iter_mut() {
         let cell = get_cell_2d(predicted_position.0.truncate(), config.smoothing_radius);
         let hash = hash_cell_2d(cell);
         let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
-        //println!("cell: {:?}  hash: {}  key: {}", cell, hash, key);
-        //spatial_hash.indices[i] = SpatialIndex {
         new_indices.push(SpatialIndex {
-            //index: index.0,
             key,
             hash,
             entity_id,
@@ -458,12 +435,11 @@ fn update_spatial_hash_system(
         }
     }
 
-    spatial_hash.first_entity_id = first_entity_id;
-
+    // sort by key
     new_indices.sort_by(|a, b| a.key.partial_cmp(&b.key).unwrap());
 
-    let mut last_key = u32::MAX;
     // set spatial_hash.offsets to the first index of each hash
+    let mut last_key = u32::MAX;
     new_indices.iter().enumerate().for_each(|(i, index)| {
         if index.key != last_key {
             spatial_hash.offsets[index.key as usize] = i;
@@ -472,6 +448,8 @@ fn update_spatial_hash_system(
     });
 
     spatial_hash.indices = new_indices;
+
+    spatial_hash.first_entity_id = first_entity_id;
 
     // print first 20 entries
     //println!(
@@ -485,8 +463,8 @@ fn update_spatial_hash_system(
 }
 
 fn calculate_density_system(
-    mut particles_query: Query<(Entity, &PredictedPosition, &mut Density), With<Density>>,
-    particles_query_inner: Query<(Entity, &PredictedPosition), With<Particle>>,
+    mut particles_query: Query<(&PredictedPosition, &mut Density), With<Density>>,
+    particles_query_inner: Query<&PredictedPosition, With<Particle>>,
     config: Res<Config>,
     spatial_hash: Res<SpatialHash>,
 ) {
@@ -494,17 +472,9 @@ fn calculate_density_system(
         return;
     }
 
-    //let mut all_densities = Vec::new();
-    //for (mut density, transform) in &mut particles_query {
-
-    // shared mutable variable
-    //let marked = AtomicBool::new(true);
-    //if !marked.load(Ordering::Relaxed) {
-    //    marked.store(true, Ordering::Relaxed);
-
     particles_query
         .par_iter_mut()
-        .for_each(|(entity, predicted_position, mut density)| {
+        .for_each(|(predicted_position, mut density)| {
             let mut density_sum = 0.;
             let mut density_near_sum = 0.;
 
@@ -513,7 +483,7 @@ fn calculate_density_system(
                 &spatial_hash,
                 &config,
                 |neighbor_entity_id| {
-                    let (_, neighbor_predicted_position) =
+                    let neighbor_predicted_position =
                         particles_query_inner.get(neighbor_entity_id).unwrap();
 
                     let sqrt_dst =
@@ -528,15 +498,6 @@ fn calculate_density_system(
 
                     density_sum += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
                     density_near_sum += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
-
-                    //if index.0 == 0 {
-                    //    println!(
-                    //        "i: {}  sqrt_dst: {} d_density: {}",
-                    //        i,
-                    //        sqrt_dst,
-                    //        spiky_kernel_pow_2(&config.smoothing_radius, &distance)
-                    //    );
-                    //}
                 },
                 None, // include self
                 false,
@@ -544,53 +505,8 @@ fn calculate_density_system(
 
             density.far = density_sum;
             density.near = density_near_sum;
-            //if index.0 == 0 {
-            //    println!("density_sum: {}", density_sum);
-            //}
-            //all_densities.push(density.far);
-        });
-
-    // average density
-    //let average_density = all_densities.iter().sum::<f32>() / all_densities.len() as f32;
-    //println!(
-    //    "average_density: {}  min_density: {}  max_density: {}",
-    //    average_density,
-    //    all_densities
-    //        .iter()
-    //        .min_by(|a, b| a.partial_cmp(b).unwrap())
-    //        .unwrap(),
-    //    all_densities
-    //        .iter()
-    //        .max_by(|a, b| a.partial_cmp(b).unwrap())
-    //        .unwrap()
-    //);
-}
-
-/*
-fn sync_density_system(
-    mut particles_query: Query<(Entity, &Index, &PredictedPosition, &Density), With<Density>>,
-    particles_query2: Query<(Entity, &Index, &PredictedPosition, &Density), With<Density>>,
-    config: Res<Config>,
-    mut spatial_hash: ResMut<SpatialHash>,
-) {
-    return;
-    if spatial_hash.particles.len() == 0 {
-        return;
-    }
-    particles_query
-        .iter_mut()
-        .for_each(|(entity, index, predicted_position, density)| {
-            println!(
-                "index: {}  entity: {:?} predicted_pos: {:?}",
-                index.0, entity, predicted_position
-            );
-            let particle2 = particles_query2.get(entity).unwrap();
-            println!("particle2: {:?}", particle2);
-            spatial_hash.particles[index.0].3 = density.clone();
         });
 }
-
-*/
 
 fn pressure_force_system(
     time: Res<Time>,
@@ -598,7 +514,7 @@ fn pressure_force_system(
         (Entity, &PredictedPosition, &mut Velocity, &Density),
         With<Particle>,
     >,
-    particles_query_inner: Query<(Entity, &PredictedPosition, &Density), With<Particle>>,
+    particles_query_inner: Query<(&PredictedPosition, &Density), With<Particle>>,
     config: Res<Config>,
     spatial_hash: Res<SpatialHash>,
 ) {
@@ -606,7 +522,6 @@ fn pressure_force_system(
         return;
     }
     let delta_t = time.delta_seconds();
-    //println!("delta_t: {}", delta_t);
 
     let pressure_from_density = |density: f32| -> f32 {
         return (density - config.target_density) * config.pressure_multiplier;
@@ -618,7 +533,6 @@ fn pressure_force_system(
 
     let mut rng = thread_rng();
     let random_direction = Vec2::new(rng.gen_range(-1. ..1.), rng.gen_range(-1. ..1.)).normalize();
-    //let random_direction = Vec2::new(0., 1.);
 
     particles_query.par_iter_mut().for_each(
         |(entity_id, predicted_position, mut velocity, density)| {
@@ -630,9 +544,8 @@ fn pressure_force_system(
                 &predicted_position.0,
                 &spatial_hash,
                 &config,
-                //|_, _, predicted_position2, _, density2| {
                 |neighbor_entity_id| {
-                    let (_, predicted_position2, density2) =
+                    let (predicted_position2, density2) =
                         particles_query_inner.get(neighbor_entity_id).unwrap();
 
                     let offset = predicted_position2.0 - predicted_position.0;
@@ -664,16 +577,13 @@ fn pressure_force_system(
                         * shared_pressure_near
                         / density2.near;
                 },
-                Some(entity_id),
+                Some(entity_id), // exclude self
                 false,
             );
 
-            let local_density = density.far; //density.far * density.near;
-
-            let acceleration = sum_pressure_force / local_density;
+            let acceleration = sum_pressure_force / density.far;
 
             velocity.0 += acceleration * delta_t;
-            //println!("acceleration {:?}", acceleration);
         },
     );
 }
@@ -681,7 +591,7 @@ fn pressure_force_system(
 fn move_system(
     config: Res<Config>,
     time: Res<Time>,
-    mut particles_query: Query<(&mut Transform, &Velocity, &mut PredictedPosition), With<Particle>>,
+    mut particles_query: Query<(&mut Transform, &Velocity), With<Particle>>,
 ) {
     if config.is_paused {
         return;
@@ -690,13 +600,12 @@ fn move_system(
 
     particles_query
         .par_iter_mut()
-        .for_each(|(mut transform, velocity, mut predicted_position)| {
+        .for_each(|(mut transform, velocity)| {
             transform.translation += velocity.0.extend(0.) * (delta_t);
-            //predicted_position.0 = transform.translation;
         });
 }
 
-fn sync_system(
+fn sync_meshes_system(
     config: Res<Config>,
     mut last_smoothing_radius: Local<f32>,
     mut first_run: Local<bool>,
@@ -746,14 +655,6 @@ fn bounce_system(
                     velocity.0.x *= -1. * (1.0 - config.damping);
                 }
 
-                // if on the edge, apply force inwards
-                // TODO: check this again
-                /*
-                if edge_dst.x > -1. {
-                    velocity.0.x += -transform.translation.x.signum() * 2.;
-                }
-                */
-
                 // move inside
                 transform.translation.x += -transform.translation.x.signum() * edge_dst.x.abs();
             }
@@ -762,14 +663,6 @@ fn bounce_system(
                 if velocity.0.y.signum() == transform.translation.y.signum() {
                     velocity.0.y = -velocity.0.y * (1.0 - config.damping);
                 }
-
-                // if on the edge, apply force inwards
-                // TODO: check this again
-                /*
-                if edge_dst.y > -1. {
-                    velocity.0.y += -transform.translation.y.signum() * 2.;
-                }
-                */
 
                 // move inside
                 transform.translation.y -= transform.translation.y.signum() * edge_dst.y.abs();
@@ -782,8 +675,6 @@ fn bounce_system(
     }
 }
 
-// color particles based on their velocity
-// color quads based on their density
 fn color_system(
     config: Res<Config>,
     mut particles_query: Query<
@@ -825,7 +716,7 @@ fn color_system(
             &spatial_hash,
             &config,
             |neighbor_entity_id| {
-                let (position2) = particles_query_inner.get(neighbor_entity_id).unwrap();
+                let position2 = particles_query_inner.get(neighbor_entity_id).unwrap();
 
                 let offset = position2.translation - transform.translation;
                 let sqrt_dst = offset.length_squared();
@@ -847,9 +738,9 @@ fn color_system(
         );
     }
 
-    //if config.is_paused {
-    //    return;
-    //}
+    if config.is_paused {
+        return;
+    }
 
     particles_query
         .par_iter_mut()
@@ -893,81 +784,6 @@ fn keyboard_animation_control(
     mut measurements: ResMut<Measurements>,
 ) {
     let mut key_pressed = false;
-    /*
-    let gravity_delta = 0.05;
-    if keyboard_input.pressed(KeyCode::Up) {
-        config.gravity.y += gravity_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::Down) {
-        config.gravity.y -= gravity_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::Left) {
-        config.gravity.x -= gravity_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::Right) {
-        config.gravity.x += gravity_delta;
-        key_pressed = true;
-    }
-
-    let damping_delta = 0.001;
-    if keyboard_input.pressed(KeyCode::W) {
-        config.damping += damping_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::S) {
-        config.damping -= damping_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::X) {
-        config.damping = DAMPING_DEFAULT;
-        key_pressed = true;
-    }
-
-    let target_density_delta = 0.2;
-    if keyboard_input.pressed(KeyCode::E) {
-        config.target_density += target_density_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::D) {
-        config.target_density -= target_density_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::C) {
-        config.target_density = TARGET_DENSITY_DEFAULT;
-        key_pressed = true;
-    }
-
-    let pressure_multiplier_delta = 5.;
-    if keyboard_input.pressed(KeyCode::R) {
-        config.pressure_multiplier += pressure_multiplier_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::F) {
-        config.pressure_multiplier -= pressure_multiplier_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::V) {
-        config.pressure_multiplier = PRESSURE_MULTIPLIER_DEFAULT;
-        key_pressed = true;
-    }
-
-    let smoothing_radius_delta = 0.5;
-    if keyboard_input.pressed(KeyCode::T) {
-        config.smoothing_radius += smoothing_radius_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::G) {
-        config.smoothing_radius -= smoothing_radius_delta;
-        key_pressed = true;
-    }
-    if keyboard_input.pressed(KeyCode::B) {
-        config.smoothing_radius = SMOOTHING_RADIUS_DEFAULT;
-        key_pressed = true;
-    }
-     */
 
     // reset position
     if keyboard_input.just_pressed(KeyCode::Space) {
@@ -1115,28 +931,12 @@ fn process_neighbors<F>(
                 if index_data.hash != hash {
                     continue;
                 }
-                //let (
-                //    neighbor_position,
-                //    neighbor_predicted_position,
-                //    neighbor_velocity,
-                //    neighbor_density,
-                //) = spatial_hash
-                //    .particles
-                //    .get(index_data.index as usize)
-                //    .unwrap();
 
                 if skip_entity_id.is_some() && skip_entity_id.unwrap() == index_data.entity_id {
                     continue;
                 }
 
                 process(index_data.entity_id);
-                //process(
-                //    index_data.index,
-                //    neighbor_position,
-                //    neighbor_predicted_position,
-                //    neighbor_velocity,
-                //    neighbor_density,
-                //);
             }
         }
     }
