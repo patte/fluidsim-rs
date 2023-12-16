@@ -12,3 +12,12 @@ cargo run --release
 ```bash
 cargo watch -x "run --release" --ignore '*.json'
 ```
+
+## wasm
+```bash
+cargo build --release --target wasm32-unknown-unknown
+wasm-bindgen --no-typescript --target web \
+    --out-dir ./out/ \
+    --out-name "fluidsim" \
+    ./target/wasm32-unknown-unknown/release/fluidsim.wasm
+```

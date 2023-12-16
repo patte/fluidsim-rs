@@ -14,7 +14,6 @@ use bevy_inspector_egui::{
 };
 
 use chrono::prelude::Utc;
-use rand::{thread_rng, Rng};
 
 mod math;
 use math::*;
@@ -52,13 +51,14 @@ enum ParticleColorMode {
     Velocity,
     Density,
     CellKey,
+    Blue,
 }
 
 fn default_particle_color_mode() -> ParticleColorMode {
     ParticleColorMode::Velocity
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 pub struct Measurements {
     delta_t: f32,
     tps: f32,
@@ -89,7 +89,7 @@ struct Particle;
 struct Velocity(Vec2);
 
 fn default_max_velocity_for_color() -> f32 {
-    10.0
+    3.0
 }
 
 #[derive(Component, Clone, Debug, Default, Copy)]
@@ -99,7 +99,7 @@ struct Density {
 }
 
 fn default_target_density() -> f32 {
-    55.
+    36.
 }
 
 fn default_max_density_for_color() -> f32 {
@@ -210,16 +210,16 @@ impl Default for Config {
             gravity: Vec2::new(0., -9.81),
             damping: 0.2,
             target_density: default_target_density(),
-            pressure_multiplier: 450.,
-            near_pressure_multiplier: 7.,
+            pressure_multiplier: 370.,
+            near_pressure_multiplier: 7.2,
             smoothing_radius: 0.35,
             max_velocity_for_color: default_max_velocity_for_color(),
             max_density_for_color: default_max_density_for_color(),
-            num_particles: 2048,
+            num_particles: 1200,
             particle_color_mode: default_particle_color_mode(),
             mark_sample_particle_neighbors: false,
             bounding_box: default_bounding_box(),
-            interaction_input_strength: 90.,
+            interaction_input_strength: 60.,
             interaction_input_radius: 2.,
             time_scale: 1.,
             prediction_time_scale: 0.5,
@@ -260,7 +260,6 @@ fn main() {
             WorldInspectorPlugin::default().run_if(input_toggle_active(false, KeyCode::Escape)),
         )
         .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
-        //.add_plugins(ResourceInspectorPlugin::<Config>::default())
         .insert_resource(config)
         .register_type::<Config>()
         .insert_resource(GradientResource::new())
@@ -809,36 +808,39 @@ fn color_system(
         return;
     }
 
-    particles_query
-        .par_iter_mut()
-        .for_each(|(velocity, transform, density, mut material)| {
-            if config.particle_color_mode == ParticleColorMode::Velocity {
-                let speed_normalized = velocity.0.length() / config.max_velocity_for_color;
-                //println!("speed_normalized {}", speed_normalized);
-                *material = gradient_resource.get_gradient_color_material(&speed_normalized);
-            } else if config.particle_color_mode == ParticleColorMode::Density {
-                let density_normalized = density.far / config.max_density_for_color;
-                //println!("density_normalized {}", density_normalized);
-                *material = gradient_resource.get_gradient_color_material(&density_normalized);
-            } else if config.particle_color_mode == ParticleColorMode::CellKey
-                && spatial_hash.indices.len() > 0
-            {
-                let cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
-                let hash = hash_cell_2d(cell);
-                let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
-                let wrapped_color_index =
-                    color_scheme_categorical_resource.get_wrapped_index(&(key as usize));
-                *material = color_scheme_categorical_resource
-                    .get_color_material_wrapped(&wrapped_color_index);
-            }
-        });
+    if config.particle_color_mode != ParticleColorMode::Blue {
+        particles_query
+            .par_iter_mut()
+            .for_each(|(velocity, transform, density, mut material)| {
+                if config.particle_color_mode == ParticleColorMode::Velocity {
+                    let speed_normalized = velocity.0.length() / config.max_velocity_for_color;
+                    //println!("speed_normalized {}", speed_normalized);
+                    *material = gradient_resource.get_gradient_color_material(&speed_normalized);
+                } else if config.particle_color_mode == ParticleColorMode::Density {
+                    let density_normalized = density.far / config.max_density_for_color;
+                    //println!("density_normalized {}", density_normalized);
+                    *material = gradient_resource.get_gradient_color_material(&density_normalized);
+                } else if config.particle_color_mode == ParticleColorMode::CellKey
+                    && spatial_hash.indices.len() > 0
+                {
+                    let cell =
+                        get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
+                    let hash = hash_cell_2d(cell);
+                    let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
+                    let wrapped_color_index =
+                        color_scheme_categorical_resource.get_wrapped_index(&(key as usize));
+                    *material = color_scheme_categorical_resource
+                        .get_color_material_wrapped(&wrapped_color_index);
+                }
+            });
 
-    quads_query
-        .par_iter_mut()
-        .for_each(|(density, mut material)| {
-            let density_normalized = density.far / config.max_density_for_color;
-            *material = gradient_resource.get_gradient_color_material(&density_normalized);
-        });
+        quads_query
+            .par_iter_mut()
+            .for_each(|(density, mut material)| {
+                let density_normalized = density.far / config.max_density_for_color;
+                *material = gradient_resource.get_gradient_color_material(&density_normalized);
+            });
+    }
 }
 
 fn keyboard_interaction_system(

@@ -52,6 +52,10 @@ pub fn get_most_recent_file() -> Option<fs::DirEntry> {
 }
 
 pub fn load_most_recent_config_from_file() -> Config {
+    // no files in wasm
+    if cfg!(target_arch = "wasm32") {
+        return Config::default();
+    }
     // make sure directory exists
     fs::create_dir_all("./fluidsim/").unwrap();
 
