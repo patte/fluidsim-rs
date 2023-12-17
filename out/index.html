@@ -1,10 +1,70 @@
 <!DOCTYPE html>
 <html lang="en">
-  <body style="margin: 0px">
+  <body style="margin: 0px; background-color: #181a1b">
     <script type="module">
-      import init from "./fluidsim.js";
+      let support = true;
+      try {
+        if (
+          typeof WebAssembly !== "object" ||
+          typeof WebAssembly.instantiate !== "function"
+        ) {
+          support = false;
+        }
+      } catch (e) {
+        support = false;
+      }
+      if (!support) {
+        document.getElementById("status").innerHTML = "Error:";
+        document.getElementById("status").style.color = "#cf0000";
+        document.getElementById("error").innerHTML =
+          "Error: WebAssembly not supported";
+      }
 
-      init();
+      // import errors are not catched
+      import init from "./fluidsim.js";
+      document.getElementById("status").innerHTML = "Loading wasm...";
+
+      init().catch((e) => {
+        if (
+          e.message ===
+          "Using exceptions for control flow, don't mind me. This isn't actually an error!"
+        )
+          return;
+        document.getElementById("loader-container").style.display = "block";
+        document.getElementById("status").innerHTML = "Error:";
+        document.getElementById("status").style.color = "#cf0000";
+        document.getElementById("error").innerHTML = e;
+        throw e;
+      });
+      document.getElementById("status").innerHTML = "";
+      document.getElementById("loader-container").style.display = "block";
     </script>
+    <style>
+      #loader-container {
+        position: absolute;
+        bottom: 0;
+        left: 50%;
+        transform: translate(-50%, -100%);
+        color: #e8e6e3;
+      }
+      h1 {
+        font-size: 28px;
+      }
+      p {
+        font-size: 23px;
+      }
+      @media (orientation: portrait) {
+        h1 {
+          font-size: 58px;
+        }
+        p {
+          font-size: 53px;
+        }
+      }
+    </style>
   </body>
+  <div id="loader-container">
+    <h1 id="status">Starting up...</h1>
+    <p id="error"></p>
+  </div>
 </html>

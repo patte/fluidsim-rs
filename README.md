@@ -20,4 +20,6 @@ wasm-bindgen --no-typescript --target web \
     --out-dir ./out/ \
     --out-name "fluidsim" \
     ./target/wasm32-unknown-unknown/release/fluidsim.wasm
+
+cargo watch --ignore '*.json' -s "cargo build --target wasm32-unknown-unknown --release && wasm-bindgen --no-typescript --target web --out-dir ./out/ --out-name \"fluidsim\" ./target/wasm32-unknown-unknown/release/fluidsim.wasm"
 ```

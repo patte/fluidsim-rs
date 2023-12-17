@@ -207,7 +207,7 @@ const CIRCLE_RATIO: f32 = 0.10;
 impl Default for Config {
     fn default() -> Self {
         Self {
-            gravity: Vec2::new(0., -9.81),
+            gravity: Vec2::new(0., -9.),
             damping: 0.2,
             target_density: default_target_density(),
             pressure_multiplier: 370.,
@@ -328,12 +328,13 @@ fn setup(
     for i in 0..config.num_particles {
         // arrange in cube arround 0,0
         let transform = get_position_in_grid(&config, i);
+        let initial_color_material = materials.add(ColorMaterial::from(Color::PURPLE));
         commands.spawn((
             MaterialMesh2dBundle {
                 mesh: meshes
                     .add(new_circle(config.smoothing_radius * CIRCLE_RATIO).into())
                     .into(),
-                material: materials.add(ColorMaterial::from(Color::PURPLE)),
+                material: initial_color_material,
                 transform,
                 ..default()
             },
@@ -515,16 +516,6 @@ fn update_spatial_hash_system(
     spatial_hash.indices = new_indices;
 
     spatial_hash.first_entity_id = first_entity_id;
-
-    // print first 20 entries
-    //println!(
-    //    "spatial_hash.indices: {:?}",
-    //    &spatial_hash.indices[0..80.min(spatial_hash.indices.len())]
-    //);
-    //println!(
-    //    "spatial_hash.offsets: {:?}",
-    //    &spatial_hash.offsets[0..20.min(spatial_hash.offsets.len())]
-    //);
 }
 
 fn calculate_density_system(

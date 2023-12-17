@@ -54,6 +54,7 @@ pub fn inspector_ui(
     egui::Window::new("Config")
         .default_width(50.)
         .default_height(600.)
+        .default_open(false)
         .show(egui_context.get_mut(), |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 bevy_inspector_egui::bevy_inspector::ui_for_resource::<Config>(world, ui);
