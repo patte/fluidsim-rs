@@ -38,6 +38,7 @@
       });
       document.getElementById("status").innerHTML = "";
       document.getElementById("loader-container").style.display = "block";
+      document.body.style.backgroundColor = "black";
     </script>
     <style>
       #loader-container {
@@ -60,6 +61,11 @@
         p {
           font-size: 53px;
         }
+      }
+      /* center canvas */
+      canvas {
+        display: block;
+        margin: auto;
       }
     </style>
   </body>
