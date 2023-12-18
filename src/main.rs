@@ -1,7 +1,7 @@
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use bevy_internal::{
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-    input::common_conditions::input_toggle_active,
+    input::{common_conditions::input_toggle_active, touch::TouchPhase},
     sprite::Mesh2dHandle,
     window::PresentMode,
 };
@@ -201,7 +201,13 @@ pub struct Config {
 
 const MASS: f32 = 1.;
 const TIME_STEP: f64 = 1. / 180.;
-pub const SCALE_FACTOR: f32 = 0.02;
+
+//pub const SCALE_FACTOR: f32 = 0.015;
+pub const SCALE_FACTOR: f32 = if cfg!(target_arch = "wasm32") {
+    0.015
+} else {
+    0.02
+};
 const CIRCLE_RATIO: f32 = 0.10;
 
 impl Default for Config {
@@ -246,7 +252,7 @@ fn main() {
                 primary_window: Some(Window {
                     title: "🌊".into(),
                     present_mode: PresentMode::AutoNoVsync,
-                    resolution: [1800., 1000.].into(),
+                    //resolution: [1800., 1000.].into(),
                     ..default()
                 }),
                 ..default()
@@ -280,6 +286,7 @@ fn main() {
             (
                 inspector_ui,
                 keyboard_interaction_system,
+                touch_interaction_system,
                 mouse_interaction_system,
             ),
         )
@@ -956,6 +963,29 @@ fn mouse_interaction_system(
         } else if buttons.pressed(MouseButton::Right) {
             interaction_inputs.point = Some(interaction_pos);
             interaction_inputs.strength = -config.interaction_input_strength;
+        } else {
+            interaction_inputs.point = None;
+            interaction_inputs.strength = 0.;
+        }
+    }
+}
+
+fn touch_interaction_system(
+    q_windows: Query<&Window, With<bevy_internal::window::PrimaryWindow>>,
+    mut touch_evr: EventReader<TouchInput>,
+    mut interaction_inputs: ResMut<InteractionInputs>,
+    config: Res<Config>,
+) {
+    let window = q_windows.single();
+
+    for touch in touch_evr.read() {
+        if touch.phase == TouchPhase::Started || touch.phase == TouchPhase::Moved {
+            let position = touch.position;
+            let x = (position.x - (window.width() / 2.)) * SCALE_FACTOR;
+            let y = -(position.y - (window.height() / 2.)) * SCALE_FACTOR;
+            let interaction_pos = Vec2::new(x, y);
+            interaction_inputs.point = Some(interaction_pos);
+            interaction_inputs.strength = config.interaction_input_strength;
         } else {
             interaction_inputs.point = None;
             interaction_inputs.strength = 0.;
