@@ -22,6 +22,8 @@ cargo watch -x "run --release" --ignore '*.json'
 ### prepare
 ```bash
 rustup target add wasm32-unknown-unknown
+## make sure to get update wasm-bindgen binary
+cargo install -f wasm-bindgen-cli
 ```
 
 ### run
@@ -30,7 +32,7 @@ cargo build --profile wasm-release --target wasm32-unknown-unknown
 wasm-bindgen --no-typescript --target web \
     --out-dir ./out/ \
     --out-name "fluidsim" \
-    ./target/wasm32-unknown-unknown/release/fluidsim.wasm
+    ./target/wasm32-unknown-unknown/wasm-release/fluidsim.wasm
 ```
 
 ### serve
@@ -41,5 +43,5 @@ dufs -p 3000 ./out/
 
 ### develop
 ```bash
-cargo watch --ignore '*.json' -s "cargo build --profile wasm-release --target wasm32-unknown-unknown && wasm-bindgen --no-typescript --target web --out-dir ./out/ --out-name \"fluidsim\" ./target/wasm32-unknown-unknown/release/fluidsim.wasm"
+cargo watch --ignore '*.json' -s "cargo build --profile wasm-release --target wasm32-unknown-unknown && wasm-bindgen --no-typescript --target web --out-dir ./out/ --out-name \"fluidsim\" ./target/wasm32-unknown-unknown/wasm-release/fluidsim.wasm"
 ```
