@@ -16,7 +16,9 @@ pub fn inspector_ui(
     mut last_time: Local<f32>,
     mut last_delta_t: Local<f32>,
 ) {
-    let space_pressed = world.resource::<Input<KeyCode>>().just_pressed(KeyCode::H);
+    let space_pressed = world
+        .resource::<ButtonInput<KeyCode>>()
+        .just_pressed(KeyCode::KeyH);
     if space_pressed {
         *disabled = !*disabled;
     }

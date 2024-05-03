@@ -8,9 +8,9 @@ use super::GradientResource;
 impl GradientResource {
     pub fn new() -> Self {
         let mut gradient = Gradient::new();
-        gradient.add_key(0.0, Color::BLUE.into());
-        gradient.add_key(0.5, Color::GREEN.into());
-        gradient.add_key(1.0, Color::RED.into());
+        gradient.add_key(0.0, Color::BLUE.rgba_to_vec4());
+        gradient.add_key(0.5, Color::GREEN.rgba_to_vec4());
+        gradient.add_key(1.0, Color::RED.rgba_to_vec4());
 
         Self {
             gradient,
@@ -30,7 +30,7 @@ impl GradientResource {
                 gradient_point.z,
                 gradient_point.w,
             );
-            self.precomputed_materials[i] = materials.add(color.into());
+            self.precomputed_materials[i] = materials.add(color);
         }
     }
 
@@ -77,7 +77,7 @@ impl ColorSchemeCategoricalResource {
             Color::hex("b3b3b3").unwrap(),
         ];
         for i in 0..colors.len() {
-            self.precomputed_materials[i] = materials.add(colors[i].into());
+            self.precomputed_materials[i] = materials.add(colors[i]);
         }
     }
 

@@ -37,10 +37,12 @@ pub fn get_position_in_grid(config: &Config, i: usize) -> Transform {
     ))
 }
 
-pub fn new_circle(radius: f32) -> shape::Circle {
-    shape::Circle {
+pub fn new_circle(radius: f32) -> Mesh {
+    Circle {
         radius,
-        vertices: 8,
         ..default()
     }
+    .mesh()
+    .resolution(8)
+    .into()
 }

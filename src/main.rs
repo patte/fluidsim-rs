@@ -134,7 +134,7 @@ struct SpatialHash {
 }
 
 fn get_default_interaction_input_strength() -> f32 {
-    40.
+    30.
 }
 
 fn get_default_interaction_input_radius() -> f32 {
@@ -225,7 +225,7 @@ impl Default for Config {
             particle_color_mode: default_particle_color_mode(),
             mark_sample_particle_neighbors: false,
             bounding_box: default_bounding_box(),
-            interaction_input_strength: 60.,
+            interaction_input_strength: get_default_interaction_input_strength(),
             interaction_input_radius: 2.,
             time_scale: 1.,
             prediction_time_scale: 0.5,
@@ -339,7 +339,7 @@ fn setup(
         commands.spawn((
             MaterialMesh2dBundle {
                 mesh: meshes
-                    .add(new_circle(config.smoothing_radius * CIRCLE_RATIO).into())
+                    .add(new_circle(config.smoothing_radius * CIRCLE_RATIO))
                     .into(),
                 material: initial_color_material,
                 transform,
@@ -689,7 +689,7 @@ fn sync_meshes_system(
     for mut mesh in &mut particles_query {
         let old_id = mesh.0.clone();
         *mesh = meshes
-            .add(new_circle(config.smoothing_radius * CIRCLE_RATIO).into())
+            .add(new_circle(config.smoothing_radius * CIRCLE_RATIO))
             .into();
         meshes.remove(old_id);
     }
@@ -845,7 +845,7 @@ fn keyboard_interaction_system(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    keyboard_input: Res<Input<KeyCode>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
     mut config: ResMut<Config>,
     mut particles_query: Query<(&mut Velocity, &mut Transform), With<Particle>>,
     mut measurements: ResMut<Measurements>,
@@ -863,49 +863,49 @@ fn keyboard_interaction_system(
     }
 
     // pause simulation
-    if keyboard_input.just_pressed(KeyCode::P) {
+    if keyboard_input.just_pressed(KeyCode::KeyP) {
         config.is_paused = !config.is_paused;
         key_pressed = true;
     }
 
     // pause after next frame
-    if keyboard_input.just_pressed(KeyCode::Right) {
+    if keyboard_input.just_pressed(KeyCode::ArrowRight) {
         config.is_paused = false;
         config.pause_after_next_frame = true;
         key_pressed = true;
     }
 
     // reset config
-    if keyboard_input.just_pressed(KeyCode::I) {
+    if keyboard_input.just_pressed(KeyCode::KeyI) {
         *config = Config::default();
 
         key_pressed = true;
     }
 
     // save config
-    if keyboard_input.just_pressed(KeyCode::Z) {
+    if keyboard_input.just_pressed(KeyCode::KeyZ) {
         save_config_to_file(config.clone());
         println!("config saved!");
         key_pressed = true;
     }
 
     //load config
-    if keyboard_input.just_pressed(KeyCode::U) {
+    if keyboard_input.just_pressed(KeyCode::KeyU) {
         *config = load_most_recent_config_from_file();
         println!("config loaded!");
         key_pressed = true;
     }
 
     // toggle auto save
-    if keyboard_input.just_pressed(KeyCode::K) {
+    if keyboard_input.just_pressed(KeyCode::KeyK) {
         config.auto_save = !config.auto_save;
         println!("auto_save: {}", config.auto_save);
         key_pressed = true;
     }
 
     // pop new particle at random position
-    if keyboard_input.just_pressed(KeyCode::N) || keyboard_input.just_pressed(KeyCode::M) {
-        let spawn_num_particles = if keyboard_input.just_pressed(KeyCode::N) {
+    if keyboard_input.just_pressed(KeyCode::KeyN) || keyboard_input.just_pressed(KeyCode::KeyM) {
+        let spawn_num_particles = if keyboard_input.just_pressed(KeyCode::KeyN) {
             1
         } else {
             10
@@ -914,7 +914,7 @@ fn keyboard_interaction_system(
             commands.spawn((
                 MaterialMesh2dBundle {
                     mesh: meshes
-                        .add(new_circle(config.smoothing_radius * CIRCLE_RATIO).into())
+                        .add(new_circle(config.smoothing_radius * CIRCLE_RATIO))
                         .into(),
                     material: materials.add(ColorMaterial::from(Color::PURPLE)),
                     transform: get_random_transform(&config),
@@ -947,7 +947,7 @@ fn keyboard_interaction_system(
 
 fn mouse_interaction_system(
     q_windows: Query<&Window, With<bevy_internal::window::PrimaryWindow>>,
-    buttons: Res<Input<MouseButton>>,
+    buttons: Res<ButtonInput<MouseButton>>,
     config: Res<Config>,
     mut interaction_inputs: ResMut<InteractionInputs>,
 ) {
