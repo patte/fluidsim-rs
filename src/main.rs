@@ -1,4 +1,8 @@
-use bevy::{prelude::*, sprite::MaterialMesh2dBundle, window::WindowMode};
+use bevy::{
+    prelude::*,
+    sprite::MaterialMesh2dBundle,
+    window::{WindowMode, WindowResolution},
+};
 use bevy_internal::{
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::{common_conditions::input_toggle_active, touch::TouchPhase},
@@ -17,7 +21,7 @@ use bevy_inspector_egui::{
 use image::GenericImageView;
 
 //use image::{self, imageops};
-use std::net;
+use std::{net, time::Instant};
 
 use chrono::prelude::Utc;
 
@@ -208,13 +212,35 @@ pub struct Config {
 const MASS: f32 = 1.;
 const TIME_STEP: f64 = 1. / 180.;
 
+// macos 1.5
+// native resolution 2560-by-1664 pixels at 224 ppi
+// measured: 3840 x 2496
+static NATIVE_MULTIPLIER: f32 = 1.5;
+
+// 1 for fullscreen
+// 0.5 for twice horizontal aspect
+static ASPECT_MULTIPLIER_Y: f32 = 0.4;
+
+static SCREEN_PIXELS_X: f32 = 2560. * NATIVE_MULTIPLIER; // 5120
+static SCREEN_PIXELS_Y: f32 = 1664. * NATIVE_MULTIPLIER * ASPECT_MULTIPLIER_Y; // 3328 (1331)
+
+//static CCCBD_PIXELS_X: u32 = 448;
+//static CCCBD_PIXELS_Y: u32 = 160;
+
+static SCALE_FACTOR: f32 = SCALE_FACTOR2 * 6.4 * 0.001; // 0.015;
+
+static SCALE_FACTOR2: f32 = 0.4; // bigger makes things smaller
+
+//"width": 16.0,
+//"height": 10.0,
+
 //pub const SCALE_FACTOR: f32 = 0.015;
-pub const SCALE_FACTOR: f32 = if cfg!(target_arch = "wasm32") {
-    0.015
-} else {
-    0.02
-};
-const CIRCLE_RATIO: f32 = 0.10;
+//pub const SCALE_FACTOR: f32 = if cfg!(target_arch = "wasm32") {
+//    0.015
+//} else {
+//    0.02
+//};
+static CIRCLE_RATIO: f32 = 0.11;
 
 impl Default for Config {
     fn default() -> Self {
@@ -257,9 +283,10 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "🌊".into(),
-                    //present_mode: PresentMode::AutoNoVsync,
-                    //resolution: [448., 160.].into(),
-                    mode: WindowMode::Fullscreen,
+                    present_mode: PresentMode::AutoNoVsync,
+                    mode: WindowMode::Windowed,
+                    resolution: WindowResolution::new(SCREEN_PIXELS_X, SCREEN_PIXELS_Y)
+                        .with_scale_factor_override(1.0),
                     ..default()
                 }),
                 ..default()
@@ -711,8 +738,8 @@ fn bounce_system(
         return;
     }
 
-    let width = config.bounding_box.width;
-    let height = config.bounding_box.height;
+    let width = config.bounding_box.width * SCALE_FACTOR2;
+    let height = config.bounding_box.height * SCALE_FACTOR2;
 
     let half_size = Vec3::new(width / 2., height / 2., 0.0);
 
@@ -1068,12 +1095,15 @@ fn process_neighbors<F>(
 }
 
 fn screenshot_system(
-    measurements: Res<Measurements>,
     input: Res<ButtonInput<KeyCode>>,
     main_window: Query<Entity, With<PrimaryWindow>>,
     mut screenshot_manager: ResMut<ScreenshotManager>,
     mut counter: Local<u32>,
+    mut elapsed: Local<f32>,
+    time: Res<Time>,
 ) {
+    *elapsed += time.delta_seconds();
+
     if input.just_pressed(KeyCode::KeyA) {
         let path = format!("./screenshot-{}.png", *counter);
         *counter += 1;
@@ -1081,6 +1111,12 @@ fn screenshot_system(
             .save_screenshot_to_disk(main_window.single(), path)
             .unwrap();
     }
+
+    if *elapsed < 0.5 {
+        return;
+    }
+    *elapsed = 0.;
+
     let ip = "👾";
     let port = 2342;
     let socket = net::UdpSocket::bind("0.0.0.0:0").expect("failed to bind host socket");
@@ -1097,6 +1133,14 @@ fn screenshot_system(
                     );
                     return;
                 }
+
+                // print dimensions
+                //println!(
+                //    "Screenshot: {}x{}",
+                //    dynamic_img.width(),
+                //    dynamic_img.height()
+                //);
+
                 let width: u8 = 56; // in tiles (*8 for pixels)
                 let height: u8 = 160; // pixels aka lines
 
@@ -1105,6 +1149,9 @@ fn screenshot_system(
                     height as u32,
                     image::imageops::FilterType::Nearest,
                 );
+
+                //println!("Screenshot resized: {}x{}", img.width(), img.height());
+
                 fn pix_is_black(pix: &image::Rgba<u8>) -> bool {
                     pix[0] > 0 || pix[1] > 0 || pix[2] > 0
                 }
@@ -1125,7 +1172,10 @@ fn screenshot_system(
                 let offset_x = ((width as u32 * 8) - img.dimensions().0) / 2;
                 //println!("offset_x: {}px {}tile", offset_x, offset_x / 8);
 
-                for y in 0..height as u32 {
+                let offset_y = (height as u32) - img.dimensions().1;
+                //println!("offset_y: {}px", offset_y);
+
+                for y in 0..(height as u32).min(img.dimensions().1) {
                     for x in 0..width as u32 {
                         let mut current_byte: u8 = 0;
                         if x * 8 < offset_x {
@@ -1142,7 +1192,8 @@ fn screenshot_system(
                             }
                         }
 
-                        packed_bytes[(y * width as u32 + x) as usize + 10] = current_byte;
+                        packed_bytes[((y + offset_y) * width as u32 + x) as usize + 10] =
+                            current_byte;
                     }
                 }
 
