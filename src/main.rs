@@ -1,4 +1,4 @@
-use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
+use bevy::{prelude::*, sprite::MaterialMesh2dBundle, window::WindowMode};
 use bevy_internal::{
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::{common_conditions::input_toggle_active, touch::TouchPhase},
@@ -6,12 +6,18 @@ use bevy_internal::{
     window::PresentMode,
 };
 
+use bevy::render::view::screenshot::ScreenshotManager;
+use bevy::window::PrimaryWindow;
 use bevy::window::Window;
 
 use bevy_inspector_egui::{
     bevy_egui::EguiPlugin, prelude::ReflectInspectorOptions, quick::WorldInspectorPlugin,
     DefaultInspectorConfigPlugin, InspectorOptions,
 };
+use image::GenericImageView;
+
+//use image::{self, imageops};
+use std::net;
 
 use chrono::prelude::Utc;
 
@@ -251,8 +257,9 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "🌊".into(),
-                    present_mode: PresentMode::AutoNoVsync,
-                    //resolution: [1800., 1000.].into(),
+                    //present_mode: PresentMode::AutoNoVsync,
+                    //resolution: [448., 160.].into(),
+                    mode: WindowMode::Fullscreen,
                     ..default()
                 }),
                 ..default()
@@ -288,6 +295,7 @@ fn main() {
                 keyboard_interaction_system,
                 touch_interaction_system,
                 mouse_interaction_system,
+                screenshot_system,
             ),
         )
         .add_systems(
@@ -943,6 +951,11 @@ fn keyboard_interaction_system(
             save_config_to_file(config.clone());
         }
     }
+
+    // exit
+    if keyboard_input.just_pressed(KeyCode::KeyQ) {
+        std::process::exit(0);
+    }
 }
 
 fn mouse_interaction_system(
@@ -1052,4 +1065,123 @@ fn process_neighbors<F>(
             }
         }
     }
+}
+
+fn screenshot_system(
+    measurements: Res<Measurements>,
+    input: Res<ButtonInput<KeyCode>>,
+    main_window: Query<Entity, With<PrimaryWindow>>,
+    mut screenshot_manager: ResMut<ScreenshotManager>,
+    mut counter: Local<u32>,
+) {
+    if input.just_pressed(KeyCode::KeyA) {
+        let path = format!("./screenshot-{}.png", *counter);
+        *counter += 1;
+        screenshot_manager
+            .save_screenshot_to_disk(main_window.single(), path)
+            .unwrap();
+    }
+    let ip = "👾";
+    let port = 2342;
+    let socket = net::UdpSocket::bind("0.0.0.0:0").expect("failed to bind host socket");
+
+    let counter_local = *counter;
+    let _ = screenshot_manager.take_screenshot(main_window.single(), move |img| {
+        match img.try_into_dynamic() {
+            Ok(dynamic_img) => {
+                if dynamic_img.width() == 0 || dynamic_img.height() == 0 {
+                    println!(
+                        "Screenshot empty: {}x{}",
+                        dynamic_img.width(),
+                        dynamic_img.height()
+                    );
+                    return;
+                }
+                let width: u8 = 56; // in tiles (*8 for pixels)
+                let height: u8 = 160; // pixels aka lines
+
+                let img = dynamic_img.resize(
+                    width as u32 * 8,
+                    height as u32,
+                    image::imageops::FilterType::Nearest,
+                );
+                fn pix_is_black(pix: &image::Rgba<u8>) -> bool {
+                    pix[0] > 0 || pix[1] > 0 || pix[2] > 0
+                }
+
+                let mut packed_bytes: Vec<u8> = vec![0; 10 + width as usize * height as usize];
+
+                packed_bytes[0] = 0;
+                packed_bytes[1] = 19;
+                packed_bytes[2] = 0;
+                packed_bytes[3] = 0;
+                packed_bytes[4] = 0;
+                packed_bytes[5] = 0;
+                packed_bytes[6] = 0;
+                packed_bytes[7] = width;
+                packed_bytes[8] = 0;
+                packed_bytes[9] = height;
+
+                let offset_x = ((width as u32 * 8) - img.dimensions().0) / 2;
+                //println!("offset_x: {}px {}tile", offset_x, offset_x / 8);
+
+                for y in 0..height as u32 {
+                    for x in 0..width as u32 {
+                        let mut current_byte: u8 = 0;
+                        if x * 8 < offset_x {
+                            continue;
+                        }
+                        for j in 0..8 {
+                            let img_x = x * 8 + j - offset_x as u32;
+                            if img_x < img.dimensions().0 {
+                                let pix = img.get_pixel(img_x, y as u32);
+                                current_byte = current_byte << 1;
+                                if pix_is_black(&pix) {
+                                    current_byte = current_byte | 1;
+                                }
+                            }
+                        }
+
+                        packed_bytes[(y * width as u32 + x) as usize + 10] = current_byte;
+                    }
+                }
+
+                // expand packed_bytes: every bit becomes one byte
+                let mut packed_bytes_expanded: Vec<u8> =
+                    vec![0; width as usize * height as usize * 8];
+                for y in 0..height as u32 {
+                    for x in 0..width as u32 {
+                        let byte = packed_bytes[(y * width as u32 + x) as usize + 10];
+                        for j in 0..8 {
+                            let bit = (byte >> (7 - j)) & 1;
+                            // bit == 0 => 00000000
+                            // bit == 1 => 11111111
+                            packed_bytes_expanded[(y * width as u32 + x) as usize * 8 + j] =
+                                bit * 255;
+                        }
+                    }
+                }
+
+                // packed_bytes into image and save to disk
+                let img = image::DynamicImage::ImageLuma8(
+                    image::GrayImage::from_raw(
+                        width as u32 * 8,
+                        height as u32,
+                        packed_bytes_expanded.to_vec(),
+                    )
+                    .unwrap(),
+                );
+                let path = format!("./screenshots/scscreenshot-{}.png", counter_local);
+                img.save(path).unwrap();
+
+                //println!("sending packet");
+                //socket
+                //    .send_to(&packed_bytes, (ip.clone(), port))
+                //    .expect("failed to send packet");
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+            }
+        }
+    });
 }
