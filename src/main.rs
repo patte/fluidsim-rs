@@ -1121,7 +1121,6 @@ fn screenshot_system(
     let port = 2342;
     let socket = net::UdpSocket::bind("0.0.0.0:0").expect("failed to bind host socket");
 
-    let counter_local = *counter;
     let _ = screenshot_manager.take_screenshot(main_window.single(), move |img| {
         match img.try_into_dynamic() {
             Ok(dynamic_img) => {
@@ -1135,7 +1134,7 @@ fn screenshot_system(
                 }
 
                 // save to disk
-                //let path_full = format!("./screenshots/screenshot-full-{}.png", counter_local);
+                //let path_full = format!("./screenshots/screenshot-full.png");
                 //dynamic_img.save(path_full).unwrap();
 
                 // print dimensions
@@ -1154,9 +1153,9 @@ fn screenshot_system(
                     image::imageops::FilterType::Triangle,
                 );
 
-                let path_resized =
-                    format!("./screenshots/screenshot-resized-{}.png", counter_local);
-                img.save(path_resized).unwrap();
+                //let path_resized =
+                //    format!("./screenshots/screenshot-resized.png");
+                //img.save(path_resized).unwrap();
 
                 //println!("Screenshot resized: {}x{}", img.width(), img.height());
 
@@ -1206,8 +1205,6 @@ fn screenshot_system(
                 }
 
                 // expand packed_bytes: every bit becomes one byte
-                // todo: fix image cut of on the right side
-                // may also be a problem with the packed_bytes
                 let mut packed_bytes_expanded: Vec<u8> =
                     vec![0; width as usize * height as usize * 8];
                 for y in 0..height as u32 {
@@ -1232,7 +1229,7 @@ fn screenshot_system(
                     )
                     .unwrap(),
                 );
-                let path = format!("./screenshots/scscreenshot-{}.png", counter_local);
+                let path = format!("./screenshots/screenshot.png");
                 img.save(path).unwrap();
 
                 //println!("sending packet");
