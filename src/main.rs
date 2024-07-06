@@ -219,7 +219,7 @@ static NATIVE_MULTIPLIER: f32 = 1.5;
 
 // 1 for fullscreen
 // 0.5 for twice horizontal aspect
-static ASPECT_MULTIPLIER_Y: f32 = 0.4;
+static ASPECT_MULTIPLIER_Y: f32 = 0.55;
 
 static SCREEN_PIXELS_X: f32 = 2560. * NATIVE_MULTIPLIER; // 5120
 static SCREEN_PIXELS_Y: f32 = 1664. * NATIVE_MULTIPLIER * ASPECT_MULTIPLIER_Y; // 3328 (1331)
@@ -229,7 +229,7 @@ static SCREEN_PIXELS_Y: f32 = 1664. * NATIVE_MULTIPLIER * ASPECT_MULTIPLIER_Y; /
 
 static SCALE_FACTOR: f32 = SCALE_FACTOR2 * 6.4 * 0.001; // 0.015;
 
-static SCALE_FACTOR2: f32 = 0.4; // bigger makes things smaller
+static SCALE_FACTOR2: f32 = 0.5; // bigger makes things smaller
 
 //"width": 16.0,
 //"height": 10.0,
@@ -1134,6 +1134,10 @@ fn screenshot_system(
                     return;
                 }
 
+                // save to disk
+                //let path_full = format!("./screenshots/screenshot-full-{}.png", counter_local);
+                //dynamic_img.save(path_full).unwrap();
+
                 // print dimensions
                 //println!(
                 //    "Screenshot: {}x{}",
@@ -1147,13 +1151,17 @@ fn screenshot_system(
                 let img = dynamic_img.resize(
                     width as u32 * 8,
                     height as u32,
-                    image::imageops::FilterType::Nearest,
+                    image::imageops::FilterType::Triangle,
                 );
+
+                let path_resized =
+                    format!("./screenshots/screenshot-resized-{}.png", counter_local);
+                img.save(path_resized).unwrap();
 
                 //println!("Screenshot resized: {}x{}", img.width(), img.height());
 
-                fn pix_is_black(pix: &image::Rgba<u8>) -> bool {
-                    pix[0] > 0 || pix[1] > 0 || pix[2] > 0
+                fn pix_is_on(pix: &image::Rgba<u8>) -> bool {
+                    pix[0] + pix[1] + pix[2] > (60 * 3)
                 }
 
                 let mut packed_bytes: Vec<u8> = vec![0; 10 + width as usize * height as usize];
@@ -1186,7 +1194,7 @@ fn screenshot_system(
                             if img_x < img.dimensions().0 {
                                 let pix = img.get_pixel(img_x, y as u32);
                                 current_byte = current_byte << 1;
-                                if pix_is_black(&pix) {
+                                if pix_is_on(&pix) {
                                     current_byte = current_byte | 1;
                                 }
                             }
@@ -1198,6 +1206,8 @@ fn screenshot_system(
                 }
 
                 // expand packed_bytes: every bit becomes one byte
+                // todo: fix image cut of on the right side
+                // may also be a problem with the packed_bytes
                 let mut packed_bytes_expanded: Vec<u8> =
                     vec![0; width as usize * height as usize * 8];
                 for y in 0..height as u32 {

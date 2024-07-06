@@ -12,7 +12,7 @@
   "mark_sample_particle_neighbors": false,
   "bounding_box": {
     "width": 24.0,
-    "height": 6.0
+    "height": 8.0
   },
   "interaction_input_strength": 30.0,
   "interaction_input_radius": 2.0,
