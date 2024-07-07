@@ -1,4 +1,5 @@
 use bevy::{
+    color::palettes::basic::PURPLE,
     prelude::*,
     sprite::MaterialMesh2dBundle,
     window::{WindowMode, WindowResolution},
@@ -6,7 +7,7 @@ use bevy::{
 use bevy_internal::{
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::common_conditions::input_toggle_active,
-    sprite::Mesh2dHandle,
+    //sprite::Mesh2dHandle,
     window::PresentMode,
 };
 
@@ -25,13 +26,13 @@ use math::*;
 mod spatial_hash;
 use spatial_hash::*;
 
-use bevy_hanabi::Gradient;
+//use bevy_hanabi::Gradient;
 
 mod ui;
 use systems::{
     bounce_system, calculate_density_system, cccb_display_system, gravity_system,
     keyboard_interaction_system, measurements_system, mouse_interaction_system, move_system,
-    pressure_force_system, process_neighbors, touch_interaction_system, update_spatial_hash_system,
+    pressure_force_system, touch_interaction_system, update_spatial_hash_system,
 };
 use ui::*;
 
@@ -41,21 +42,24 @@ use file_io::*;
 mod utils;
 use utils::*;
 
-mod colors;
+//mod colors;
 
 mod systems;
 
+/*
 #[derive(Resource)]
 struct GradientResource {
     gradient: Gradient<Vec4>,
     precomputed_materials: Vec<Handle<ColorMaterial>>,
 }
 
+
 #[derive(Resource)]
 struct ColorSchemeCategoricalResource {
     colors: Vec<Color>,
     precomputed_materials: Vec<Handle<ColorMaterial>>,
 }
+*/
 
 #[derive(Reflect, Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq)]
 enum ParticleColorMode {
@@ -297,11 +301,11 @@ fn main() {
         .add_plugins(
             WorldInspectorPlugin::default().run_if(input_toggle_active(false, KeyCode::Escape)),
         )
-        .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
+        .insert_resource(ClearColor(Color::srgb(0.0, 0.0, 0.0)))
         .insert_resource(config)
         .register_type::<Config>()
-        .insert_resource(GradientResource::new())
-        .insert_resource(ColorSchemeCategoricalResource::new())
+        //.insert_resource(GradientResource::new())
+        //.insert_resource(ColorSchemeCategoricalResource::new())
         .insert_resource(SpatialHash {
             indices: Vec::<SpatialIndex>::new(),
             offsets: Vec::new(),
@@ -332,9 +336,9 @@ fn main() {
                 measurements_system,
                 pressure_force_system,
                 move_system,
-                sync_meshes_system,
+                //sync_meshes_system,
                 bounce_system,
-                color_system,
+                //color_system,
             )
                 .chain(),
         )
@@ -346,8 +350,8 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut gradient_resource: ResMut<GradientResource>,
-    mut color_scheme_categorical_resource: ResMut<ColorSchemeCategoricalResource>,
+    //mut gradient_resource: ResMut<GradientResource>,
+    //mut color_scheme_categorical_resource: ResMut<ColorSchemeCategoricalResource>,
     config: Res<Config>,
 ) {
     commands.spawn(Camera2dBundle {
@@ -361,14 +365,14 @@ fn setup(
         ..default()
     });
 
-    gradient_resource.precompute_materials(&mut materials);
-    color_scheme_categorical_resource.precompute_materials(&mut materials);
+    //gradient_resource.precompute_materials(&mut materials);
+    //color_scheme_categorical_resource.precompute_materials(&mut materials);
 
     // spawn particles
     for i in 0..config.num_particles {
         // arrange in cube arround 0,0
         let transform = get_position_in_grid(&config, i);
-        let initial_color_material = materials.add(ColorMaterial::from(Color::PURPLE));
+        let initial_color_material = materials.add(ColorMaterial::from(Color::from(PURPLE)));
         commands.spawn((
             MaterialMesh2dBundle {
                 mesh: meshes
@@ -421,6 +425,7 @@ fn setup(
          */
 }
 
+/*
 fn sync_meshes_system(
     config: Res<Config>,
     mut last_smoothing_radius: Local<f32>,
@@ -433,14 +438,15 @@ fn sync_meshes_system(
         *last_smoothing_radius = config.smoothing_radius;
         return;
     }
-    if config.smoothing_radius == *last_smoothing_radius {
-        return;
-    }
-    *last_smoothing_radius = config.smoothing_radius;
 
-    for mut mesh in &mut particles_query {
-        let old_id = mesh.0.clone();
-        *mesh = meshes
+        if config.smoothing_radius == *last_smoothing_radius {
+            return;
+        }
+        *last_smoothing_radius = config.smoothing_radius;
+
+        for mut mesh in &mut particles_query {
+            let old_id = mesh.0.clone();
+            *mesh = meshes
             .add(new_circle(config.smoothing_radius * CIRCLE_RATIO))
             .into();
         meshes.remove(old_id);
@@ -548,3 +554,4 @@ fn color_system(
             });
     }
 }
+ */

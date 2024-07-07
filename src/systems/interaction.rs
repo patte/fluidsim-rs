@@ -1,4 +1,7 @@
-use bevy::{input::touch::TouchPhase, prelude::*, sprite::MaterialMesh2dBundle};
+use bevy::{
+    color::palettes::basic::PURPLE, input::touch::TouchPhase, prelude::*,
+    sprite::MaterialMesh2dBundle,
+};
 
 use crate::{
     get_position_in_grid, get_random_transform, load_most_recent_config_from_file, new_circle,
@@ -87,7 +90,7 @@ pub fn keyboard_interaction_system(
                     mesh: meshes
                         .add(new_circle(config.smoothing_radius * CIRCLE_RATIO))
                         .into(),
-                    material: materials.add(ColorMaterial::from(Color::PURPLE)),
+                    material: materials.add(ColorMaterial::from(Color::from(PURPLE))),
                     transform: get_random_transform(&config),
                     ..default()
                 },

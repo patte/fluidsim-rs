@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 
-use bevy_hanabi::Gradient;
 use bevy_internal::{prelude::Vec4, sprite::ColorMaterial};
 
 use super::GradientResource;
