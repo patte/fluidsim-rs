@@ -14,7 +14,9 @@ cargo run --release
 
 ### develop
 ```bash
-cargo watch -x "run --release" --ignore '*.json'
+cargo install cargo-watch
+
+cargo watch -x "run --release" --ignore '*.json,*.png'
 ```
 
 ## wasm

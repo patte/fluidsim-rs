@@ -1,4 +1,8 @@
-use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
+use bevy::{
+    prelude::*,
+    sprite::MaterialMesh2dBundle,
+    window::{WindowMode, WindowResolution},
+};
 use bevy_internal::{
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::{common_conditions::input_toggle_active, touch::TouchPhase},
@@ -6,12 +10,15 @@ use bevy_internal::{
     window::PresentMode,
 };
 
+use bevy::render::view::screenshot::ScreenshotManager;
+use bevy::window::PrimaryWindow;
 use bevy::window::Window;
 
 use bevy_inspector_egui::{
     bevy_egui::EguiPlugin, prelude::ReflectInspectorOptions, quick::WorldInspectorPlugin,
     DefaultInspectorConfigPlugin, InspectorOptions,
 };
+use cccb_display::{CccbDisplayImagePackage, CccbImageSender};
 
 use chrono::prelude::Utc;
 
@@ -197,18 +204,36 @@ pub struct Config {
     pause_after_next_frame: bool,
     start_time: i64,
     auto_save: bool,
+    #[serde(default)]
+    cccb_display_sender: bool,
 }
 
 const MASS: f32 = 1.;
 const TIME_STEP: f64 = 1. / 180.;
 
+// macos
+// native resolution 2560-by-1664 pixels at 224 ppi
+// measured: 3840 x 2496 => 1.5
+static NATIVE_MULTIPLIER: f32 = 1.5;
+
+// 1 for fullscreen
+// 0.5 for twice horizontal aspect
+static ASPECT_MULTIPLIER_Y: f32 = 0.55;
+
+static SCREEN_PIXELS_X: f32 = 2560. * NATIVE_MULTIPLIER; // 5120
+static SCREEN_PIXELS_Y: f32 = 1664. * NATIVE_MULTIPLIER * ASPECT_MULTIPLIER_Y; // 3328 (1331)
+
+static SCALE_FACTOR: f32 = SCALE_FACTOR2 * 6.4 * 0.001; // 0.015;
+
+static SCALE_FACTOR2: f32 = 0.5; // bigger makes things smaller
+
 //pub const SCALE_FACTOR: f32 = 0.015;
-pub const SCALE_FACTOR: f32 = if cfg!(target_arch = "wasm32") {
-    0.015
-} else {
-    0.02
-};
-const CIRCLE_RATIO: f32 = 0.10;
+//pub const SCALE_FACTOR: f32 = if cfg!(target_arch = "wasm32") {
+//    0.015
+//} else {
+//    0.02
+//};
+static CIRCLE_RATIO: f32 = 0.11;
 
 impl Default for Config {
     fn default() -> Self {
@@ -233,6 +258,7 @@ impl Default for Config {
             pause_after_next_frame: false,
             start_time: Utc::now().timestamp(),
             auto_save: false,
+            cccb_display_sender: false,
         }
     }
 }
@@ -252,7 +278,9 @@ fn main() {
                 primary_window: Some(Window {
                     title: "🌊".into(),
                     present_mode: PresentMode::AutoNoVsync,
-                    //resolution: [1800., 1000.].into(),
+                    mode: WindowMode::Windowed,
+                    resolution: WindowResolution::new(SCREEN_PIXELS_X, SCREEN_PIXELS_Y)
+                        .with_scale_factor_override(1.0),
                     ..default()
                 }),
                 ..default()
@@ -288,6 +316,7 @@ fn main() {
                 keyboard_interaction_system,
                 touch_interaction_system,
                 mouse_interaction_system,
+                cccb_display_system,
             ),
         )
         .add_systems(
@@ -703,8 +732,8 @@ fn bounce_system(
         return;
     }
 
-    let width = config.bounding_box.width;
-    let height = config.bounding_box.height;
+    let width = config.bounding_box.width * SCALE_FACTOR2;
+    let height = config.bounding_box.height * SCALE_FACTOR2;
 
     let half_size = Vec3::new(width / 2., height / 2., 0.0);
 
@@ -903,6 +932,13 @@ fn keyboard_interaction_system(
         key_pressed = true;
     }
 
+    // toggle cccb display sender
+    if keyboard_input.just_pressed(KeyCode::KeyC) {
+        config.cccb_display_sender = !config.cccb_display_sender;
+        println!("cccb_display_sender: {}", config.cccb_display_sender);
+        key_pressed = true;
+    }
+
     // pop new particle at random position
     if keyboard_input.just_pressed(KeyCode::KeyN) || keyboard_input.just_pressed(KeyCode::KeyM) {
         let spawn_num_particles = if keyboard_input.just_pressed(KeyCode::KeyN) {
@@ -942,6 +978,11 @@ fn keyboard_interaction_system(
         if config.auto_save {
             save_config_to_file(config.clone());
         }
+    }
+
+    // exit
+    if keyboard_input.just_pressed(KeyCode::KeyQ) {
+        std::process::exit(0);
     }
 }
 
@@ -1052,4 +1093,56 @@ fn process_neighbors<F>(
             }
         }
     }
+}
+
+fn cccb_display_system(
+    main_window: Query<Entity, With<PrimaryWindow>>,
+    mut screenshot_manager: ResMut<ScreenshotManager>,
+    mut elapsed: Local<f32>,
+    time: Res<Time>,
+    config: Res<Config>,
+) {
+    if !config.cccb_display_sender {
+        return;
+    }
+
+    *elapsed += time.delta_seconds();
+
+    // max pps 200
+    if *elapsed < 1. / 200. {
+        return;
+    }
+    *elapsed = 0.;
+
+    let _ = screenshot_manager.take_screenshot(main_window.single(), move |img| {
+        match img.try_into_dynamic() {
+            Ok(dynamic_img) => {
+                if dynamic_img.width() == 0 || dynamic_img.height() == 0 {
+                    println!(
+                        "Screenshot empty: {}x{}",
+                        dynamic_img.width(),
+                        dynamic_img.height()
+                    );
+                    return;
+                }
+
+                fn pix_is_on(pix: &image::Rgba<u8>) -> bool {
+                    pix[0] + pix[1] + pix[2] > (60 * 3)
+                }
+                let img_packed = CccbDisplayImagePackage::new(dynamic_img, pix_is_on, true);
+
+                // save screenshot to disk
+                img_packed
+                    .to_luma8()
+                    .save("./screenshots/screenshot.png")
+                    .unwrap();
+
+                let mut sender = CccbImageSender::new_from_env();
+                sender.send_package(&img_packed);
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+            }
+        }
+    });
 }
