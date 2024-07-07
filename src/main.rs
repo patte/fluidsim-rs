@@ -18,10 +18,7 @@ use bevy_inspector_egui::{
     bevy_egui::EguiPlugin, prelude::ReflectInspectorOptions, quick::WorldInspectorPlugin,
     DefaultInspectorConfigPlugin, InspectorOptions,
 };
-use image::GenericImageView;
-
-//use image::{self, imageops};
-use std::{net, time::Instant};
+use cccb_display::{CccbDisplayImagePackage, CccbImageSender};
 
 use chrono::prelude::Utc;
 
@@ -207,14 +204,16 @@ pub struct Config {
     pause_after_next_frame: bool,
     start_time: i64,
     auto_save: bool,
+    #[serde(default)]
+    cccb_display_sender: bool,
 }
 
 const MASS: f32 = 1.;
 const TIME_STEP: f64 = 1. / 180.;
 
-// macos 1.5
+// macos
 // native resolution 2560-by-1664 pixels at 224 ppi
-// measured: 3840 x 2496
+// measured: 3840 x 2496 => 1.5
 static NATIVE_MULTIPLIER: f32 = 1.5;
 
 // 1 for fullscreen
@@ -224,15 +223,9 @@ static ASPECT_MULTIPLIER_Y: f32 = 0.55;
 static SCREEN_PIXELS_X: f32 = 2560. * NATIVE_MULTIPLIER; // 5120
 static SCREEN_PIXELS_Y: f32 = 1664. * NATIVE_MULTIPLIER * ASPECT_MULTIPLIER_Y; // 3328 (1331)
 
-//static CCCBD_PIXELS_X: u32 = 448;
-//static CCCBD_PIXELS_Y: u32 = 160;
-
 static SCALE_FACTOR: f32 = SCALE_FACTOR2 * 6.4 * 0.001; // 0.015;
 
 static SCALE_FACTOR2: f32 = 0.5; // bigger makes things smaller
-
-//"width": 16.0,
-//"height": 10.0,
 
 //pub const SCALE_FACTOR: f32 = 0.015;
 //pub const SCALE_FACTOR: f32 = if cfg!(target_arch = "wasm32") {
@@ -265,6 +258,7 @@ impl Default for Config {
             pause_after_next_frame: false,
             start_time: Utc::now().timestamp(),
             auto_save: false,
+            cccb_display_sender: false,
         }
     }
 }
@@ -322,7 +316,7 @@ fn main() {
                 keyboard_interaction_system,
                 touch_interaction_system,
                 mouse_interaction_system,
-                screenshot_system,
+                cccb_display_system,
             ),
         )
         .add_systems(
@@ -938,6 +932,13 @@ fn keyboard_interaction_system(
         key_pressed = true;
     }
 
+    // toggle cccb display sender
+    if keyboard_input.just_pressed(KeyCode::KeyC) {
+        config.cccb_display_sender = !config.cccb_display_sender;
+        println!("cccb_display_sender: {}", config.cccb_display_sender);
+        key_pressed = true;
+    }
+
     // pop new particle at random position
     if keyboard_input.just_pressed(KeyCode::KeyN) || keyboard_input.just_pressed(KeyCode::KeyM) {
         let spawn_num_particles = if keyboard_input.just_pressed(KeyCode::KeyN) {
@@ -1094,32 +1095,24 @@ fn process_neighbors<F>(
     }
 }
 
-fn screenshot_system(
-    input: Res<ButtonInput<KeyCode>>,
+fn cccb_display_system(
     main_window: Query<Entity, With<PrimaryWindow>>,
     mut screenshot_manager: ResMut<ScreenshotManager>,
-    mut counter: Local<u32>,
     mut elapsed: Local<f32>,
     time: Res<Time>,
+    config: Res<Config>,
 ) {
-    *elapsed += time.delta_seconds();
-
-    if input.just_pressed(KeyCode::KeyA) {
-        let path = format!("./screenshot-{}.png", *counter);
-        *counter += 1;
-        screenshot_manager
-            .save_screenshot_to_disk(main_window.single(), path)
-            .unwrap();
+    if !config.cccb_display_sender {
+        return;
     }
 
-    if *elapsed < 0.5 {
+    *elapsed += time.delta_seconds();
+
+    // max pps 200
+    if *elapsed < 1. / 200. {
         return;
     }
     *elapsed = 0.;
-
-    let ip = "👾";
-    let port = 2342;
-    let socket = net::UdpSocket::bind("0.0.0.0:0").expect("failed to bind host socket");
 
     let _ = screenshot_manager.take_screenshot(main_window.single(), move |img| {
         match img.try_into_dynamic() {
@@ -1133,109 +1126,19 @@ fn screenshot_system(
                     return;
                 }
 
-                // save to disk
-                //let path_full = format!("./screenshots/screenshot-full.png");
-                //dynamic_img.save(path_full).unwrap();
-
-                // print dimensions
-                //println!(
-                //    "Screenshot: {}x{}",
-                //    dynamic_img.width(),
-                //    dynamic_img.height()
-                //);
-
-                let width: u8 = 56; // in tiles (*8 for pixels)
-                let height: u8 = 160; // pixels aka lines
-
-                let img = dynamic_img.resize(
-                    width as u32 * 8,
-                    height as u32,
-                    image::imageops::FilterType::Triangle,
-                );
-
-                //let path_resized =
-                //    format!("./screenshots/screenshot-resized.png");
-                //img.save(path_resized).unwrap();
-
-                //println!("Screenshot resized: {}x{}", img.width(), img.height());
-
                 fn pix_is_on(pix: &image::Rgba<u8>) -> bool {
                     pix[0] + pix[1] + pix[2] > (60 * 3)
                 }
+                let img_packed = CccbDisplayImagePackage::new(dynamic_img, pix_is_on, true);
 
-                let mut packed_bytes: Vec<u8> = vec![0; 10 + width as usize * height as usize];
+                // save screenshot to disk
+                img_packed
+                    .to_luma8()
+                    .save("./screenshots/screenshot.png")
+                    .unwrap();
 
-                packed_bytes[0] = 0;
-                packed_bytes[1] = 19;
-                packed_bytes[2] = 0;
-                packed_bytes[3] = 0;
-                packed_bytes[4] = 0;
-                packed_bytes[5] = 0;
-                packed_bytes[6] = 0;
-                packed_bytes[7] = width;
-                packed_bytes[8] = 0;
-                packed_bytes[9] = height;
-
-                let offset_x = ((width as u32 * 8) - img.dimensions().0) / 2;
-                //println!("offset_x: {}px {}tile", offset_x, offset_x / 8);
-
-                let offset_y = (height as u32) - img.dimensions().1;
-                //println!("offset_y: {}px", offset_y);
-
-                for y in 0..(height as u32).min(img.dimensions().1) {
-                    for x in 0..width as u32 {
-                        let mut current_byte: u8 = 0;
-                        if x * 8 < offset_x {
-                            continue;
-                        }
-                        for j in 0..8 {
-                            let img_x = x * 8 + j - offset_x as u32;
-                            if img_x < img.dimensions().0 {
-                                let pix = img.get_pixel(img_x, y as u32);
-                                current_byte = current_byte << 1;
-                                if pix_is_on(&pix) {
-                                    current_byte = current_byte | 1;
-                                }
-                            }
-                        }
-
-                        packed_bytes[((y + offset_y) * width as u32 + x) as usize + 10] =
-                            current_byte;
-                    }
-                }
-
-                // expand packed_bytes: every bit becomes one byte
-                let mut packed_bytes_expanded: Vec<u8> =
-                    vec![0; width as usize * height as usize * 8];
-                for y in 0..height as u32 {
-                    for x in 0..width as u32 {
-                        let byte = packed_bytes[(y * width as u32 + x) as usize + 10];
-                        for j in 0..8 {
-                            let bit = (byte >> (7 - j)) & 1;
-                            // bit == 0 => 00000000
-                            // bit == 1 => 11111111
-                            packed_bytes_expanded[(y * width as u32 + x) as usize * 8 + j] =
-                                bit * 255;
-                        }
-                    }
-                }
-
-                // packed_bytes into image and save to disk
-                let img = image::DynamicImage::ImageLuma8(
-                    image::GrayImage::from_raw(
-                        width as u32 * 8,
-                        height as u32,
-                        packed_bytes_expanded.to_vec(),
-                    )
-                    .unwrap(),
-                );
-                let path = format!("./screenshots/screenshot.png");
-                img.save(path).unwrap();
-
-                //println!("sending packet");
-                //socket
-                //    .send_to(&packed_bytes, (ip.clone(), port))
-                //    .expect("failed to send packet");
+                let mut sender = CccbImageSender::new_from_env();
+                sender.send_package(&img_packed);
             }
             Err(e) => {
                 println!("Error: {}", e);

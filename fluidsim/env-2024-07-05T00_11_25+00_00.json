@@ -21,5 +21,6 @@
   "is_paused": false,
   "pause_after_next_frame": false,
   "start_time": 1720138285,
-  "auto_save": false
+  "auto_save": false,
+  "cccb_display_sender": true
 }
