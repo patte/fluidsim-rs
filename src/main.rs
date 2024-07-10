@@ -20,7 +20,10 @@ use bevy_inspector_egui::{
 use bytemuck::{Pod, Zeroable};
 use chrono::prelude::Utc;
 
+mod vendor;
+
 mod math;
+use colors::{ColorSchemeCategoricalResource, GradientResource};
 use math::*;
 
 mod spatial_hash;
@@ -28,7 +31,7 @@ use spatial_hash::*;
 
 mod ui;
 use systems::{
-    bounce_system, calculate_density_system, cccb_display_system, gravity_system,
+    bounce_system, calculate_density_system, cccb_display_system, color_system, gravity_system,
     keyboard_interaction_system, measurements_system, mouse_interaction_system, move_system,
     pressure_force_system, touch_interaction_system, update_spatial_hash_system, Measurements,
     SpatialHash,
@@ -41,27 +44,12 @@ use file_io::*;
 mod utils;
 use utils::*;
 
-//mod colors;
+mod colors;
 
 mod systems;
 
 mod instancing;
 use instancing::*;
-
-/*
-#[derive(Resource)]
-struct GradientResource {
-    gradient: Gradient<Vec4>,
-    precomputed_materials: Vec<Handle<ColorMaterial>>,
-}
-
-
-#[derive(Resource)]
-struct ColorSchemeCategoricalResource {
-    colors: Vec<Color>,
-    precomputed_materials: Vec<Handle<ColorMaterial>>,
-}
-*/
 
 #[derive(Reflect, Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq)]
 enum ParticleColorMode {
@@ -279,8 +267,8 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.0, 0.0, 0.0)))
         .insert_resource(config)
         .register_type::<Config>()
-        //.insert_resource(GradientResource::new())
-        //.insert_resource(ColorSchemeCategoricalResource::new())
+        .insert_resource(GradientResource::new())
+        .insert_resource(ColorSchemeCategoricalResource::new())
         .insert_resource(SpatialHash::default())
         .insert_resource(Measurements::default())
         .insert_resource(InteractionInputs {
@@ -309,7 +297,7 @@ fn main() {
                 move_system,
                 //sync_meshes_system,
                 bounce_system,
-                //color_system,
+                color_system,
             )
                 .chain(),
         )
@@ -317,17 +305,7 @@ fn main() {
         .run();
 }
 
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    //mut materials: ResMut<Assets<ColorMaterial>>,
-    //mut gradient_resource: ResMut<GradientResource>,
-    //mut color_scheme_categorical_resource: ResMut<ColorSchemeCategoricalResource>,
-    config: Res<Config>,
-) {
-    //gradient_resource.precompute_materials(&mut materials);
-    //color_scheme_categorical_resource.precompute_materials(&mut materials);
-
+fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, config: Res<Config>) {
     commands.spawn(Camera3dBundle {
         projection: OrthographicProjection {
             //scale: 1.0,
@@ -408,106 +386,4 @@ fn sync_meshes_system(
         meshes.remove(old_id);
     }
 }
-
-fn color_system(
-    config: Res<Config>,
-    mut particles_query: Query<
-        (&Velocity, &Transform, &Density, &mut Handle<ColorMaterial>),
-        With<Particle>,
-    >,
-    particles_query_inner: Query<&Transform, With<Particle>>,
-    mut quads_query: Query<(&Density, &mut Handle<ColorMaterial>), Without<Particle>>,
-    gradient_resource: Res<GradientResource>,
-    color_scheme_categorical_resource: Res<ColorSchemeCategoricalResource>,
-    spatial_hash: Res<SpatialHash>,
-    mut gizmos: Gizmos,
-) {
-    let first_entity_id = spatial_hash.first_entity_id;
-
-    if config.mark_sample_particle_neighbors && first_entity_id != Entity::from_raw(0) {
-        let (_, transform, _, _) = particles_query.get(first_entity_id).unwrap();
-
-        let cell = get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
-        let hash = hash_cell_2d(cell);
-        let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
-
-        //println!("cell: {:?}  hash: {}  key: {}", cell, hash, key);
-
-        let cell_color = color_scheme_categorical_resource
-            .get_color_wrapped(&(key as usize))
-            .clone();
-        let cell_color = Color::rgba(cell_color.r(), cell_color.g(), cell_color.b(), 0.6);
-
-        // draw circle with smoothing_radius around particle0
-        gizmos.circle_2d(
-            transform.translation.truncate(),
-            config.smoothing_radius,
-            Color::rgba(1., 1., 1., 0.3),
-        );
-
-        process_neighbors(
-            &transform.translation,
-            &spatial_hash,
-            &config,
-            |neighbor_entity_id| {
-                let position2 = particles_query_inner.get(neighbor_entity_id).unwrap();
-
-                let offset = position2.translation - transform.translation;
-                let sqrt_dst = offset.length_squared();
-
-                // skip if too far
-                if sqrt_dst > config.smoothing_radius.powf(2.0) {
-                    return;
-                }
-
-                // draw line to each neighbor
-                gizmos.line_2d(
-                    position2.translation.truncate(),
-                    transform.translation.truncate(),
-                    cell_color,
-                );
-            },
-            Some(first_entity_id),
-            false,
-        );
-    }
-
-    if config.is_paused {
-        return;
-    }
-
-    if config.particle_color_mode != ParticleColorMode::Blue {
-        particles_query
-            .par_iter_mut()
-            .for_each(|(velocity, transform, density, mut material)| {
-                if config.particle_color_mode == ParticleColorMode::Velocity {
-                    let speed_normalized = velocity.0.length() / config.max_velocity_for_color;
-                    //println!("speed_normalized {}", speed_normalized);
-                    *material = gradient_resource.get_gradient_color_material(&speed_normalized);
-                } else if config.particle_color_mode == ParticleColorMode::Density {
-                    let density_normalized = density.far / config.max_density_for_color;
-                    //println!("density_normalized {}", density_normalized);
-                    *material = gradient_resource.get_gradient_color_material(&density_normalized);
-                } else if config.particle_color_mode == ParticleColorMode::CellKey
-                    && spatial_hash.indices.len() > 0
-                {
-                    let cell =
-                        get_cell_2d(transform.translation.truncate(), config.smoothing_radius);
-                    let hash = hash_cell_2d(cell);
-                    let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
-                    let wrapped_color_index =
-                        color_scheme_categorical_resource.get_wrapped_index(&(key as usize));
-                    *material = color_scheme_categorical_resource
-                        .get_color_material_wrapped(&wrapped_color_index);
-                }
-            });
-
-        quads_query
-            .par_iter_mut()
-            .for_each(|(density, mut material)| {
-                let density_normalized = density.far / config.max_density_for_color;
-                *material = gradient_resource.get_gradient_color_material(&density_normalized);
-            });
-    }
-}
- */
+*/

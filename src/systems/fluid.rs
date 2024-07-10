@@ -23,8 +23,8 @@ impl Default for SpatialIndex {
 
 #[derive(Resource)]
 pub struct SpatialHash {
-    indices: Vec<SpatialIndex>,
-    offsets: Vec<usize>,
+    pub indices: Vec<SpatialIndex>,
+    pub offsets: Vec<usize>,
     pub first_entity_id: Entity,
 }
 

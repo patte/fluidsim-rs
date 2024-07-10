@@ -1,3 +1,5 @@
+use std::ops::Mul;
+
 use bevy::prelude::*;
 
 use bevy::window::PrimaryWindow;
@@ -45,6 +47,8 @@ pub fn inspector_ui(
     let p0_velocity = measurements.p0_velocity;
     let p0_density = measurements.p0_density;
     let p0_max_density_far = measurements.p0_max_density_far;
+    let p0_velocity_avg = measurements.p0_velocity_avg;
+    let p0_velocity_max = measurements.p0_velocity_max;
 
     let mut egui_context = world
         .query_filtered::<&mut EguiContext, With<PrimaryWindow>>()
@@ -55,7 +59,7 @@ pub fn inspector_ui(
 
     egui::Window::new("Config")
         .default_width(50.)
-        .default_height(600.)
+        .default_height(700.)
         .default_open(false)
         .show(egui_context.get_mut(), |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -87,6 +91,11 @@ pub fn inspector_ui(
                     ui.label(format!("position     : {:?}", p0_position));
                     ui.label(format!("pred position: {:?}", p0_predicted_position));
                     ui.label(format!("velocity     : {:?}", p0_velocity));
+                    ui.label(format!(
+                        "velocity avg : {:?}",
+                        p0_velocity_avg.mul(100.).round() / 100.
+                    ));
+                    ui.label(format!("velocity max : {:?}", p0_velocity_max));
                     ui.label(format!("density      : {:?}", p0_density.far));
                     ui.label(format!("density near : {:?}", p0_density.near));
                     ui.label(format!(
