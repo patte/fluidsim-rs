@@ -1,13 +1,12 @@
 use bevy::{
     color::palettes::basic::PURPLE,
     prelude::*,
-    sprite::MaterialMesh2dBundle,
+    render::{camera::ScalingMode, view::NoFrustumCulling},
     window::{WindowMode, WindowResolution},
 };
 use bevy_internal::{
     //diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::common_conditions::input_toggle_active,
-    //sprite::Mesh2dHandle,
     window::PresentMode,
 };
 
@@ -18,6 +17,7 @@ use bevy_inspector_egui::{
     DefaultInspectorConfigPlugin, InspectorOptions,
 };
 
+use bytemuck::{Pod, Zeroable};
 use chrono::prelude::Utc;
 
 mod math;
@@ -26,13 +26,12 @@ use math::*;
 mod spatial_hash;
 use spatial_hash::*;
 
-//use bevy_hanabi::Gradient;
-
 mod ui;
 use systems::{
     bounce_system, calculate_density_system, cccb_display_system, gravity_system,
     keyboard_interaction_system, measurements_system, mouse_interaction_system, move_system,
-    pressure_force_system, touch_interaction_system, update_spatial_hash_system,
+    pressure_force_system, touch_interaction_system, update_spatial_hash_system, Measurements,
+    SpatialHash,
 };
 use ui::*;
 
@@ -45,6 +44,9 @@ use utils::*;
 //mod colors;
 
 mod systems;
+
+mod instancing;
+use instancing::*;
 
 /*
 #[derive(Resource)]
@@ -69,21 +71,6 @@ enum ParticleColorMode {
     Blue,
 }
 
-fn default_particle_color_mode() -> ParticleColorMode {
-    ParticleColorMode::Velocity
-}
-
-#[derive(Resource, Default, Clone)]
-pub struct Measurements {
-    delta_t: f32,
-    tps: f32,
-    p0_position: Vec3,
-    p0_predicted_position: Vec3,
-    p0_velocity: Vec2,
-    p0_density: Density,
-    p0_max_density_far: f32,
-}
-
 #[derive(Default, Reflect, Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct BoundingBox {
     width: f32,
@@ -100,17 +87,27 @@ fn default_bounding_box() -> BoundingBox {
 #[derive(Component)]
 struct Particle;
 
-#[derive(Component, Clone, Debug)]
-struct Velocity(Vec2);
+#[derive(Component, Clone, Debug, Default, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct Density {
+    far: f32,
+    near: f32,
+}
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct InstanceData {
+    pub position: Vec3,
+    pub scale: f32,
+    pub velocity: Vec2,
+    pub color: [f32; 4],
+    pub predicted_position: Vec3,
+    pub density: Density,
+    pub entity_id: u32,
+}
 
 fn default_max_velocity_for_color() -> f32 {
     3.0
-}
-
-#[derive(Component, Clone, Debug, Default, Copy)]
-struct Density {
-    far: f32,
-    near: f32,
 }
 
 fn default_target_density() -> f32 {
@@ -119,33 +116,6 @@ fn default_target_density() -> f32 {
 
 fn default_max_density_for_color() -> f32 {
     default_target_density() * 1.5
-}
-
-#[derive(Component, Clone, Debug)]
-struct PredictedPosition(Vec3);
-
-#[derive(Clone, Debug)]
-struct SpatialIndex {
-    key: u32,
-    hash: u32,
-    entity_id: Entity,
-}
-
-impl Default for SpatialIndex {
-    fn default() -> Self {
-        Self {
-            key: u32::MAX,
-            hash: u32::MAX,
-            entity_id: Entity::from_raw(0),
-        }
-    }
-}
-
-#[derive(Resource)]
-struct SpatialHash {
-    indices: Vec<SpatialIndex>,
-    offsets: Vec<usize>,
-    first_entity_id: Entity,
 }
 
 fn get_default_interaction_input_strength() -> f32 {
@@ -162,6 +132,10 @@ fn get_default_time_scale() -> f32 {
 
 fn get_default_prediction_time_scale() -> f32 {
     0.5
+}
+
+fn default_particle_color_mode() -> ParticleColorMode {
+    ParticleColorMode::Velocity
 }
 
 #[derive(
@@ -285,7 +259,7 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "🌊".into(),
-                    present_mode: PresentMode::AutoNoVsync,
+                    present_mode: PresentMode::AutoVsync,
                     mode: WindowMode::Windowed,
                     resolution: WindowResolution::new(SCREEN_PIXELS_X, SCREEN_PIXELS_Y)
                         .with_scale_factor_override(1.0),
@@ -293,6 +267,7 @@ fn main() {
                 }),
                 ..default()
             }),
+            CustomMaterialPlugin,
             //FrameTimeDiagnosticsPlugin,
             //LogDiagnosticsPlugin::default(),
         ))
@@ -306,11 +281,7 @@ fn main() {
         .register_type::<Config>()
         //.insert_resource(GradientResource::new())
         //.insert_resource(ColorSchemeCategoricalResource::new())
-        .insert_resource(SpatialHash {
-            indices: Vec::<SpatialIndex>::new(),
-            offsets: Vec::new(),
-            first_entity_id: Entity::from_raw(0),
-        })
+        .insert_resource(SpatialHash::default())
         .insert_resource(Measurements::default())
         .insert_resource(InteractionInputs {
             point: None,
@@ -349,80 +320,65 @@ fn main() {
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    //mut materials: ResMut<Assets<ColorMaterial>>,
     //mut gradient_resource: ResMut<GradientResource>,
     //mut color_scheme_categorical_resource: ResMut<ColorSchemeCategoricalResource>,
     config: Res<Config>,
 ) {
-    commands.spawn(Camera2dBundle {
-        projection: OrthographicProjection {
-            scale: SCALE_FACTOR,
-            far: 100.,
-            near: -10.,
-            ..default()
-        },
-
-        ..default()
-    });
-
     //gradient_resource.precompute_materials(&mut materials);
     //color_scheme_categorical_resource.precompute_materials(&mut materials);
 
-    // spawn particles
-    for i in 0..config.num_particles {
-        // arrange in cube arround 0,0
-        let transform = get_position_in_grid(&config, i);
-        let initial_color_material = materials.add(ColorMaterial::from(Color::from(PURPLE)));
-        commands.spawn((
-            MaterialMesh2dBundle {
-                mesh: meshes
-                    .add(new_circle(config.smoothing_radius * CIRCLE_RATIO))
-                    .into(),
-                material: initial_color_material,
-                transform,
-                ..default()
-            },
-            PredictedPosition(transform.translation.clone()),
-            Velocity(Vec2::ZERO),
-            Density {
-                far: MASS,
-                near: MASS,
-            },
-            Particle,
-        ));
-    }
-
-    // a grid with squares for each pixel of the window
-    /*
-    let width = window.width();
-    let height = window.height();
-    println!("width: {}, height: {}", width, height);
-    let size: f32 = 10.;
-    let num_x = (width / size + 1.) as i32;
-    let num_y = (height / size + 1.) as i32;
-
-    // fill x and y with quads with size size
-    for x in 0..num_x {
-        for y in 0..num_y {
-            let x = x as f32 * size - (width / 2.) + size / 2.;
-            let y = y as f32 * size - (height / 2.) + size / 2.;
-            commands.spawn((
-                MaterialMesh2dBundle {
-                    mesh: meshes
-                        .add(shape::Quad::new(Vec2::new(size / 2., size / 2.)).into())
-                        .into(),
-                    material: materials.add(ColorMaterial::from(Color::WHITE)),
-                    transform: Transform::from_translation(Vec3::new(x, y, -0.2)),
-                    ..default()
-                },
-                Density {
-                    far: MASS,
-                    near: MASS,
-                },
-            ));
+    commands.spawn(Camera3dBundle {
+        projection: OrthographicProjection {
+            //scale: 1.0,
+            far: 300.,
+            near: -200.,
+            scaling_mode: ScalingMode::FixedVertical(8.0),
+            ..default()
         }
-    }
-         */
+        .into(),
+        transform: Transform::from_xyz(0.0, 0.0, 200.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ..default()
+    });
+
+    /* centered cube
+    mut materials: ResMut<Assets<StandardMaterial>>
+    commands.spawn(PbrBundle {
+        mesh: meshes.add(Cuboid::default()),
+        material: materials.add(Color::srgb(0., 0., 0.)),
+        transform: Transform::from_xyz(0., 0., 1.),
+        ..default()
+    });*/
+
+    // spawn particles
+    commands.spawn((
+        meshes.add(new_circle(config.smoothing_radius * CIRCLE_RATIO)),
+        SpatialBundle::INHERITED_IDENTITY,
+        InstanceMaterialData(
+            (0..config.num_particles)
+                .map(|i| {
+                    let position = get_position_in_grid(&config, i);
+                    return InstanceData {
+                        position: position.translation,
+                        scale: 1.0,
+                        velocity: Vec2::new(
+                            rand::random::<f32>() - 0.5,
+                            rand::random::<f32>() - 0.5,
+                        ),
+                        color: LinearRgba::from(Color::from(PURPLE)).to_f32_array(),
+                        predicted_position: position.translation,
+                        density: Density {
+                            far: MASS,
+                            near: MASS,
+                        },
+                        entity_id: i as u32,
+                    };
+                })
+                .collect(),
+        ),
+        Particle,
+        NoFrustumCulling,
+    ));
 }
 
 /*

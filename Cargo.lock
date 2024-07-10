@@ -2128,6 +2128,7 @@ dependencies = [
  "bevy",
  "bevy-inspector-egui",
  "bevy_internal",
+ "bytemuck",
  "cccb-display",
  "chrono",
  "image 0.25.1",

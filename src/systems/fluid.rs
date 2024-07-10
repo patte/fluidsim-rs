@@ -1,20 +1,55 @@
 use crate::{
     derivative_spiky_pow_2, derivative_spiky_pow_3, get_cell_2d, hash_cell_2d, key_from_hash,
-    spiky_kernel_pow_2, spiky_kernel_pow_3, Config, Density, Particle, PredictedPosition,
-    SpatialHash, SpatialIndex, Velocity, OFFSETS_2D,
+    spiky_kernel_pow_2, spiky_kernel_pow_3, Config, InstanceMaterialData, Particle, OFFSETS_2D,
 };
 use bevy::prelude::*;
 
+#[derive(Clone, Debug)]
+pub struct SpatialIndex {
+    key: u32,
+    hash: u32,
+    entity_id: Entity,
+}
+
+impl Default for SpatialIndex {
+    fn default() -> Self {
+        Self {
+            key: u32::MAX,
+            hash: u32::MAX,
+            entity_id: Entity::from_raw(0),
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct SpatialHash {
+    indices: Vec<SpatialIndex>,
+    offsets: Vec<usize>,
+    pub first_entity_id: Entity,
+}
+
+impl Default for SpatialHash {
+    fn default() -> Self {
+        Self {
+            indices: Vec::<SpatialIndex>::new(),
+            offsets: Vec::new(),
+            first_entity_id: Entity::from_raw(0),
+        }
+    }
+}
+
 pub fn update_spatial_hash_system(
     mut spatial_hash: ResMut<SpatialHash>,
-    mut particles_query: Query<(Entity, &PredictedPosition), With<Particle>>,
+    mut particles_query: Query<&mut InstanceMaterialData, With<Particle>>,
     config: Res<Config>,
 ) {
     if config.is_paused {
         return;
     }
 
-    let num_particles = particles_query.iter_mut().len();
+    let num_particles = particles_query
+        .iter_mut()
+        .fold(0, |acc, data| acc + data.len());
 
     // resize
     if num_particles > spatial_hash.indices.len() {
@@ -36,17 +71,25 @@ pub fn update_spatial_hash_system(
     // remember first entity id
     let mut first_entity_id = Entity::from_raw(0);
 
-    for (entity_id, predicted_position) in particles_query.iter_mut() {
-        let cell = get_cell_2d(predicted_position.0.truncate(), config.smoothing_radius);
-        let hash = hash_cell_2d(cell);
-        let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
-        new_indices.push(SpatialIndex {
-            key,
-            hash,
-            entity_id,
-        });
-        if first_entity_id == Entity::from_raw(0) {
-            first_entity_id = entity_id;
+    for data in particles_query.iter_mut() {
+        for i in 0..data.len() {
+            let instance = data[i];
+
+            let cell = get_cell_2d(
+                instance.predicted_position.truncate(),
+                config.smoothing_radius,
+            );
+            let hash = hash_cell_2d(cell);
+            let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
+            let entity_id = Entity::from_raw(instance.entity_id);
+            new_indices.push(SpatialIndex {
+                key,
+                hash,
+                entity_id,
+            });
+            if first_entity_id == Entity::from_raw(0) {
+                first_entity_id = entity_id;
+            }
         }
     }
 
@@ -71,11 +114,19 @@ pub fn update_spatial_hash_system(
     spatial_hash.indices = new_indices;
 
     spatial_hash.first_entity_id = first_entity_id;
+
+    /*
+    println!("spatial_hash.indices.len(): {}", spatial_hash.indices.len());
+    println!("spatial_hash.offsets.len(): {}", spatial_hash.offsets.len());
+    println!(
+        "spatial_hash.first_entity_id: {:?}",
+        spatial_hash.first_entity_id
+    );
+    println!("spatial_hash: {:?}", spatial_hash.indices);*/
 }
 
 pub fn calculate_density_system(
-    mut particles_query: Query<(&PredictedPosition, &mut Density), With<Density>>,
-    particles_query_inner: Query<&PredictedPosition, With<Particle>>,
+    mut particles_query: Query<&mut InstanceMaterialData, With<Particle>>,
     config: Res<Config>,
     spatial_hash: Res<SpatialHash>,
 ) {
@@ -83,22 +134,22 @@ pub fn calculate_density_system(
         return;
     }
 
-    particles_query
-        .par_iter_mut()
-        .for_each(|(predicted_position, mut density)| {
+    particles_query.iter_mut().for_each(|mut data| {
+        for i in 0..data.len() {
+            let instance = data[i];
             let mut density_sum = 0.;
             let mut density_near_sum = 0.;
 
             process_neighbors(
-                &predicted_position.0,
+                &instance.predicted_position,
                 &spatial_hash,
                 &config,
                 |neighbor_entity_id| {
-                    let neighbor_predicted_position =
-                        particles_query_inner.get(neighbor_entity_id).unwrap();
+                    let neighbor_instance = data[neighbor_entity_id.index() as usize];
 
-                    let sqrt_dst =
-                        (neighbor_predicted_position.0 - predicted_position.0).length_squared();
+                    let sqrt_dst = (neighbor_instance.predicted_position
+                        - instance.predicted_position)
+                        .length_squared();
 
                     // skip if too far
                     if sqrt_dst > config.smoothing_radius.powf(2.0) {
@@ -110,28 +161,29 @@ pub fn calculate_density_system(
                     density_sum += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
                     density_near_sum += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
                 },
-                None, // include self
+                Some(Entity::from_raw(instance.entity_id)),
                 false,
             );
 
-            density.far = density_sum;
-            density.near = density_near_sum;
-        });
+            data[i].density.far = density_sum;
+            data[i].density.near = density_near_sum;
+        }
+    });
 }
 
 pub fn pressure_force_system(
     time: Res<Time>,
-    mut particles_query: Query<
-        (Entity, &PredictedPosition, &mut Velocity, &Density),
-        With<Particle>,
-    >,
-    particles_query_inner: Query<(&PredictedPosition, &Density), With<Particle>>,
+    mut particles_query: Query<&mut InstanceMaterialData, With<Particle>>,
     config: Res<Config>,
     spatial_hash: Res<SpatialHash>,
+    mut counter: Local<u32>,
 ) {
     if config.is_paused {
         return;
     }
+
+    *counter += 1;
+
     let delta_t = time.delta_seconds() * config.time_scale;
 
     let pressure_from_density = |density: f32| -> f32 {
@@ -142,25 +194,23 @@ pub fn pressure_force_system(
         return density * config.near_pressure_multiplier;
     };
 
-    //let mut rng = thread_rng();
-    //let random_direction = Vec2::new(rng.gen_range(-1. ..1.), rng.gen_range(-1. ..1.)).normalize();
     let random_direction = Vec2::new(0., 1.);
 
-    particles_query.par_iter_mut().for_each(
-        |(entity_id, predicted_position, mut velocity, density)| {
+    particles_query.iter_mut().for_each(|mut data| {
+        for i in 0..data.len() {
+            let instance = data[i];
             let mut sum_pressure_force = Vec2::ZERO;
-            let pressure = pressure_from_density(density.far);
-            let near_pressure = near_pressure_from_density(&density.near);
+            let pressure = pressure_from_density(instance.density.far);
+            let near_pressure = near_pressure_from_density(&instance.density.near);
 
             process_neighbors(
-                &predicted_position.0,
+                &instance.predicted_position,
                 &spatial_hash,
                 &config,
                 |neighbor_entity_id| {
-                    let (predicted_position2, density2) =
-                        particles_query_inner.get(neighbor_entity_id).unwrap();
+                    let neighbor_instance = data[neighbor_entity_id.index() as usize];
 
-                    let offset = predicted_position2.0 - predicted_position.0;
+                    let offset = neighbor_instance.predicted_position - instance.predicted_position;
                     let sqrt_dst = offset.length_squared();
 
                     // skip if too far
@@ -175,29 +225,35 @@ pub fn pressure_force_system(
                         random_direction
                     };
 
-                    let shared_pressure = (pressure + pressure_from_density(density2.far)) * 0.5;
-                    let shared_pressure_near =
-                        (near_pressure + near_pressure_from_density(&density2.near)) * 0.5;
+                    let shared_pressure =
+                        (pressure + pressure_from_density(neighbor_instance.density.far)) * 0.5;
+                    let shared_pressure_near = (near_pressure
+                        + near_pressure_from_density(&neighbor_instance.density.near))
+                        * 0.5;
 
                     sum_pressure_force += direction
                         * derivative_spiky_pow_2(&config.smoothing_radius, &distance)
                         * shared_pressure
-                        / density2.far;
+                        / neighbor_instance.density.far;
 
                     sum_pressure_force += direction
                         * derivative_spiky_pow_3(&config.smoothing_radius, &distance)
                         * shared_pressure_near
-                        / density2.near;
+                        / neighbor_instance.density.near;
                 },
-                Some(entity_id), // exclude self
+                Some(Entity::from_raw(instance.entity_id)), // exclude self
                 false,
             );
 
-            let acceleration = sum_pressure_force / density.far;
+            let acceleration = sum_pressure_force / instance.density.far;
 
-            velocity.0 += acceleration * delta_t;
-        },
-    );
+            if *counter < 1000 {
+                data[i].velocity += acceleration * delta_t * 0.01;
+            } else {
+                data[i].velocity += acceleration * delta_t;
+            }
+        }
+    });
 }
 
 pub fn process_neighbors<F>(

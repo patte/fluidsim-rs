@@ -1,25 +1,21 @@
-use bevy::{
-    color::palettes::basic::PURPLE, input::touch::TouchPhase, prelude::*,
-    sprite::MaterialMesh2dBundle,
-};
+use bevy::{input::touch::TouchPhase, prelude::*};
 
 use crate::{
-    get_position_in_grid, get_random_transform, load_most_recent_config_from_file, new_circle,
-    save_config_to_file, Config, Density, InteractionInputs, Measurements, Particle,
-    PredictedPosition, Velocity, CIRCLE_RATIO, MASS, SCALE_FACTOR,
+    load_most_recent_config_from_file, save_config_to_file, Config, InteractionInputs, SCALE_FACTOR,
 };
 pub fn keyboard_interaction_system(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    //mut commands: Commands,
+    //mut meshes: ResMut<Assets<Mesh>>,
+    //mut materials: ResMut<Assets<ColorMaterial>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut config: ResMut<Config>,
-    mut particles_query: Query<(&mut Velocity, &mut Transform), With<Particle>>,
-    mut measurements: ResMut<Measurements>,
+    //mut particles_query: Query<(&mut Velocity, &mut Transform), With<Particle>>,
+    //mut measurements: ResMut<Measurements>,
 ) {
     let mut key_pressed = false;
 
     // reset position
+    /*
     if keyboard_input.just_pressed(KeyCode::Space) {
         for (i, (mut velocity, mut transform)) in &mut particles_query.iter_mut().enumerate() {
             velocity.0 = Vec2::ZERO;
@@ -28,6 +24,7 @@ pub fn keyboard_interaction_system(
         measurements.p0_max_density_far = 0.;
         key_pressed = true;
     }
+     */
 
     // pause simulation
     if keyboard_input.just_pressed(KeyCode::KeyP) {
@@ -78,6 +75,7 @@ pub fn keyboard_interaction_system(
     }
 
     // pop new particle at random position
+    /*
     if keyboard_input.just_pressed(KeyCode::KeyN) || keyboard_input.just_pressed(KeyCode::KeyM) {
         let spawn_num_particles = if keyboard_input.just_pressed(KeyCode::KeyN) {
             1
@@ -106,6 +104,7 @@ pub fn keyboard_interaction_system(
         config.num_particles += spawn_num_particles;
         key_pressed = true;
     }
+     */
 
     // print
     if key_pressed {
