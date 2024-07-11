@@ -1,8 +1,8 @@
 use bevy::prelude::*;
-use rand::{thread_rng, Rng};
 
 use super::Config;
 
+/*
 pub fn get_random_transform(config: &Config) -> Transform {
     let width_half = config.bounding_box.width / 2.;
     let height_half = config.bounding_box.height / 2.;
@@ -12,6 +12,7 @@ pub fn get_random_transform(config: &Config) -> Transform {
     let y = rng.gen_range(-height_half..height_half);
     Transform::from_translation(Vec3::new(x, y, 0.))
 }
+*/
 
 pub fn get_position_in_grid(config: &Config, i: usize) -> Transform {
     let num_particles_per_row = (config.num_particles as f32).sqrt() as usize;
