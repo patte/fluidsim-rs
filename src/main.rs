@@ -82,7 +82,7 @@ pub struct Density {
     near: f32,
 }
 
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug)]
 #[repr(C)]
 pub struct InstanceData {
     pub position: Vec3,
@@ -91,6 +91,7 @@ pub struct InstanceData {
     pub color: [f32; 4],
     pub predicted_position: Vec3,
     pub density: Density,
+    // usize would be more appropriate, but it's size is platform dependent
     pub entity_id: u32,
 }
 

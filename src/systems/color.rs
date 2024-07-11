@@ -16,11 +16,11 @@ pub fn color_system(
     spatial_hash: Res<SpatialHash>,
     mut gizmos: Gizmos,
 ) {
-    let first_entity_id = spatial_hash.first_entity_id;
+    let instance_index = 0;
 
-    if config.mark_sample_particle_neighbors && first_entity_id != Entity::from_raw(0) {
+    if config.mark_sample_particle_neighbors {
         particles_query.iter().for_each(|data| {
-            let instance = data[first_entity_id.index() as usize];
+            let instance = data[instance_index as usize];
 
             let cell = get_cell_2d(instance.position.truncate(), config.smoothing_radius);
             let hash = hash_cell_2d(cell);
@@ -45,7 +45,7 @@ pub fn color_system(
                 &spatial_hash,
                 &config,
                 |neighbor_entity_id| {
-                    let instance2 = data[neighbor_entity_id.index() as usize];
+                    let instance2 = data[neighbor_entity_id as usize];
 
                     let offset = instance2.position - instance.position;
                     let sqrt_dst = offset.length_squared();
@@ -62,7 +62,7 @@ pub fn color_system(
                         cell_color,
                     );
                 },
-                Some(first_entity_id),
+                Some(instance_index),
                 false,
             );
         });

@@ -2,8 +2,6 @@ use bevy::prelude::*;
 
 use crate::{Config, Density, InstanceMaterialData, Particle};
 
-use super::SpatialHash;
-
 #[derive(Resource, Default, Clone)]
 pub struct Measurements {
     pub delta_t: f32,
@@ -23,14 +21,14 @@ pub fn measurements_system(
     mut measurements: ResMut<Measurements>,
     config: Res<Config>,
     particles_query: Query<&InstanceMaterialData, With<Particle>>,
-    spatial_hash: Res<SpatialHash>,
 ) {
-    let first_entity_id = spatial_hash.first_entity_id;
-    if config.mark_sample_particle_neighbors && first_entity_id != Entity::from_raw(0) {
+    let instance_index = 0;
+
+    if config.mark_sample_particle_neighbors && instance_index != 0 {
         let data = particles_query.iter().next();
 
         if let Some(data) = data {
-            let instance = data[first_entity_id.index() as usize];
+            let instance = data[instance_index as usize];
 
             measurements.p0_position = instance.position.clone();
             measurements.p0_predicted_position = instance.predicted_position.clone();

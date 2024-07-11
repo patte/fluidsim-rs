@@ -8,7 +8,7 @@ use bevy::prelude::*;
 pub struct SpatialIndex {
     key: u32,
     hash: u32,
-    entity_id: Entity,
+    instance_index: u32,
 }
 
 impl Default for SpatialIndex {
@@ -16,7 +16,7 @@ impl Default for SpatialIndex {
         Self {
             key: u32::MAX,
             hash: u32::MAX,
-            entity_id: Entity::from_raw(0),
+            instance_index: 0,
         }
     }
 }
@@ -25,7 +25,6 @@ impl Default for SpatialIndex {
 pub struct SpatialHash {
     pub indices: Vec<SpatialIndex>,
     pub offsets: Vec<usize>,
-    pub first_entity_id: Entity,
 }
 
 impl Default for SpatialHash {
@@ -33,7 +32,6 @@ impl Default for SpatialHash {
         Self {
             indices: Vec::<SpatialIndex>::new(),
             offsets: Vec::new(),
-            first_entity_id: Entity::from_raw(0),
         }
     }
 }
@@ -58,7 +56,7 @@ pub fn update_spatial_hash_system(
             SpatialIndex {
                 key: u32::MAX,
                 hash: u32::MAX,
-                entity_id: Entity::from_raw(0),
+                instance_index: 0,
             },
         );
         spatial_hash.offsets.resize(num_particles, usize::MAX);
@@ -67,9 +65,6 @@ pub fn update_spatial_hash_system(
 
     // new indices
     let mut new_indices: Vec<SpatialIndex> = Vec::new();
-
-    // remember first entity id
-    let mut first_entity_id = Entity::from_raw(0);
 
     for data in particles_query.iter_mut() {
         for i in 0..data.len() {
@@ -81,15 +76,11 @@ pub fn update_spatial_hash_system(
             );
             let hash = hash_cell_2d(cell);
             let key = key_from_hash(hash, spatial_hash.indices.len() as u32);
-            let entity_id = Entity::from_raw(instance.entity_id);
             new_indices.push(SpatialIndex {
                 key,
                 hash,
-                entity_id,
+                instance_index: i as u32,
             });
-            if first_entity_id == Entity::from_raw(0) {
-                first_entity_id = entity_id;
-            }
         }
     }
 
@@ -113,14 +104,12 @@ pub fn update_spatial_hash_system(
 
     spatial_hash.indices = new_indices;
 
-    spatial_hash.first_entity_id = first_entity_id;
-
     /*
     println!("spatial_hash.indices.len(): {}", spatial_hash.indices.len());
     println!("spatial_hash.offsets.len(): {}", spatial_hash.offsets.len());
     println!(
-        "spatial_hash.first_entity_id: {:?}",
-        spatial_hash.first_entity_id
+        "spatial_hash.first_instance_index: {:?}",
+        spatial_hash.first_instance_index
     );
     println!("spatial_hash: {:?}", spatial_hash.indices);*/
 }
@@ -145,7 +134,7 @@ pub fn calculate_density_system(
                 &spatial_hash,
                 &config,
                 |neighbor_entity_id| {
-                    let neighbor_instance = data[neighbor_entity_id.index() as usize];
+                    let neighbor_instance = data[neighbor_entity_id as usize];
 
                     let sqrt_dst = (neighbor_instance.predicted_position
                         - instance.predicted_position)
@@ -161,7 +150,7 @@ pub fn calculate_density_system(
                     density_sum += spiky_kernel_pow_2(&config.smoothing_radius, &distance);
                     density_near_sum += spiky_kernel_pow_3(&config.smoothing_radius, &distance);
                 },
-                Some(Entity::from_raw(instance.entity_id)),
+                None, // include self
                 false,
             );
 
@@ -176,13 +165,10 @@ pub fn pressure_force_system(
     mut particles_query: Query<&mut InstanceMaterialData, With<Particle>>,
     config: Res<Config>,
     spatial_hash: Res<SpatialHash>,
-    mut counter: Local<u32>,
 ) {
     if config.is_paused {
         return;
     }
-
-    *counter += 1;
 
     let delta_t = time.delta_seconds() * config.time_scale;
 
@@ -208,7 +194,7 @@ pub fn pressure_force_system(
                 &spatial_hash,
                 &config,
                 |neighbor_entity_id| {
-                    let neighbor_instance = data[neighbor_entity_id.index() as usize];
+                    let neighbor_instance = data[neighbor_entity_id as usize];
 
                     let offset = neighbor_instance.predicted_position - instance.predicted_position;
                     let sqrt_dst = offset.length_squared();
@@ -241,16 +227,25 @@ pub fn pressure_force_system(
                         * shared_pressure_near
                         / neighbor_instance.density.near;
                 },
-                Some(Entity::from_raw(instance.entity_id)), // exclude self
+                Some(instance.entity_id), // exclude self
                 false,
             );
 
             let acceleration = sum_pressure_force / instance.density.far;
+            if acceleration.x.is_nan() || acceleration.y.is_nan() {
+                continue;
+            }
 
-            if *counter < 1000 {
-                data[i].velocity += acceleration * delta_t * 0.01;
-            } else {
-                data[i].velocity += acceleration * delta_t;
+            data[i].velocity += acceleration * delta_t;
+
+            if data[i].velocity.x.is_nan() || data[i].velocity.y.is_nan() {
+                println!(
+                    "acceleration: {:?} delta_t: {} acceleration_plus: {}",
+                    acceleration,
+                    delta_t,
+                    acceleration * delta_t
+                );
+                panic!("data[i].velocity.x.is_nan() || data[i].velocity.y.is_nan()");
             }
         }
     });
@@ -261,10 +256,10 @@ pub fn process_neighbors<F>(
     spatial_hash: &SpatialHash,
     config: &Config,
     mut process: F,
-    skip_entity_id: Option<Entity>,
+    skip_entity_id: Option<u32>,
     log: bool,
 ) where
-    F: FnMut(Entity),
+    F: FnMut(u32),
 {
     let original_cell = get_cell_2d(me_position.truncate(), config.smoothing_radius);
     let original_hash = hash_cell_2d(original_cell);
@@ -296,7 +291,7 @@ pub fn process_neighbors<F>(
                 if log {
                     println!(
                         "    key {} start_index: {} i: {} index_data.index {:?}",
-                        key, start_index, i, index_data.entity_id
+                        key, start_index, i, index_data.instance_index
                     );
                 }
 
@@ -307,11 +302,12 @@ pub fn process_neighbors<F>(
                     continue;
                 }
 
-                if skip_entity_id.is_some() && skip_entity_id.unwrap() == index_data.entity_id {
+                if skip_entity_id.is_some() && skip_entity_id.unwrap() == index_data.instance_index
+                {
                     continue;
                 }
 
-                process(index_data.entity_id);
+                process(index_data.instance_index);
             }
         }
     }
