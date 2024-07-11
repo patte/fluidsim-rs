@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::ScreenshotManager;
 use bevy::window::PrimaryWindow;
 use cccb_display::{CccbDisplayImagePackage, CccbImageSender};
+use image::GenericImageView;
 
 pub fn cccb_display_system(
     main_window: Query<Entity, With<PrimaryWindow>>,
@@ -17,15 +18,15 @@ pub fn cccb_display_system(
 
     *elapsed += time.delta_seconds();
 
-    // max pps 200
-    if *elapsed < 1. / 200. {
+    // max pps 60
+    if *elapsed < 1. / 60. {
         return;
     }
     *elapsed = 0.;
 
     let _ = screenshot_manager.take_screenshot(main_window.single(), move |img| {
         match img.try_into_dynamic() {
-            Ok(dynamic_img) => {
+            Ok(mut dynamic_img) => {
                 if dynamic_img.width() == 0 || dynamic_img.height() == 0 {
                     println!(
                         "Screenshot empty: {}x{}",
@@ -35,10 +36,26 @@ pub fn cccb_display_system(
                     return;
                 }
 
+                // resize image /2
+                let (width, height) = dynamic_img.dimensions();
+                dynamic_img =
+                    dynamic_img.resize(width / 2, height / 2, image::imageops::FilterType::Nearest);
+
+                // crop image
+                let (width, height) = dynamic_img.dimensions();
+                let crop_x = (width - CccbDisplayImagePackage::WIDTH as u32 * 8) / 2;
+                let crop_y = (height - CccbDisplayImagePackage::HEIGHT as u32) / 2;
+                dynamic_img = dynamic_img.crop_imm(
+                    crop_x,
+                    crop_y,
+                    CccbDisplayImagePackage::WIDTH as u32 * 8,
+                    CccbDisplayImagePackage::HEIGHT as u32,
+                );
+
                 fn pix_is_on(pix: &image::Rgba<u8>) -> bool {
-                    pix[0] + pix[1] + pix[2] > (60 * 3)
+                    pix[0] > 1 || pix[1] > 1 || pix[2] > 1
                 }
-                let img_packed = CccbDisplayImagePackage::new(dynamic_img, pix_is_on, true);
+                let img_packed = CccbDisplayImagePackage::new(dynamic_img, pix_is_on, false);
 
                 // save screenshot to disk
                 img_packed

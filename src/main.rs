@@ -249,7 +249,7 @@ fn main() {
                 primary_window: Some(Window {
                     title: "🌊".into(),
                     present_mode: PresentMode::AutoVsync,
-                    mode: WindowMode::Windowed,
+                    mode: WindowMode::Fullscreen,
                     resolution: WindowResolution::new(SCREEN_PIXELS_X, SCREEN_PIXELS_Y)
                         .with_scale_factor_override(1.0),
                     ..default()
@@ -312,7 +312,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, config: Res<C
             //scale: 1.0,
             far: 300.,
             near: -200.,
-            scaling_mode: ScalingMode::FixedVertical(8.0),
+            scaling_mode: ScalingMode::FixedVertical(14.0),
             ..default()
         }
         .into(),
